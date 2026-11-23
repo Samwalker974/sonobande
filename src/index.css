@@ -1,0 +1,163 @@
+@import "tailwindcss";
+
+@theme {
+  --font-display: "Outfit", ui-sans-serif, system-ui, sans-serif;
+  --font-sans: "DM Sans", ui-sans-serif, system-ui, sans-serif;
+  --font-mono: "IBM Plex Mono", ui-monospace, SFMono-Regular, monospace;
+
+  --color-paper-50: #f7f5f0;
+  --color-paper-100: #ece9e2;
+  --color-paper-200: #dfdad0;
+  --color-paper-300: #ccc6b9;
+  --color-chassis-light: #d7d4cd;
+  --color-chassis-mid: #b9b5ac;
+  --color-chassis-dark: #25272b;
+  --color-chassis-deep: #181a1d;
+  --color-walkman-orange: #d9531e;
+  --color-walkman-orange-hover: #c24515;
+  --color-brass: #b5945b;
+}
+
+@layer base {
+  html {
+    font-family: var(--font-sans);
+    background-color: #ece9e2;
+    color: #1c1e21;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    scroll-behavior: smooth;
+  }
+
+  body {
+    margin: 0;
+    min-height: 100vh;
+    background-color: #ece9e2;
+    background-image: radial-gradient(rgba(28, 30, 33, 0.04) 1px, transparent 0);
+    background-size: 20px 20px;
+  }
+}
+
+/* Brushed aluminum finish for the Walkman body */
+.walkman-aluminum {
+  background: linear-gradient(
+    180deg,
+    #dfdcd5 0%,
+    #d2cfc7 48%,
+    #c6c2b9 100%
+  );
+  box-shadow:
+    0 20px 44px -18px rgba(20, 22, 26, 0.32),
+    0 4px 10px -2px rgba(20, 22, 26, 0.14),
+    inset 0 1px 0 rgba(255, 255, 255, 0.72),
+    inset 0 -2px 4px rgba(0, 0, 0, 0.12);
+}
+
+.walkman-graphite {
+  background: linear-gradient(180deg, #2b2e33 0%, #1f2125 60%, #191b1f 100%);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.09),
+    inset 0 -1px 2px rgba(0, 0, 0, 0.55);
+}
+
+/* Mechanical Walkman transport button */
+.mech-key {
+  background: linear-gradient(180deg, #e7e4de 0%, #cfcbc2 72%, #beb9af 100%);
+  border: 1px solid #9e998e;
+  box-shadow:
+    0 4px 0 #7b776e,
+    0 6px 10px rgba(0, 0, 0, 0.24),
+    inset 0 1px 0 rgba(255, 255, 255, 0.85);
+  transition: transform 110ms cubic-bezier(0.16, 1, 0.3, 1), box-shadow 110ms cubic-bezier(0.16, 1, 0.3, 1), background 140ms ease;
+}
+
+.mech-key:hover:not(:disabled) {
+  background: linear-gradient(180deg, #efece6 0%, #d8d4cb 75%, #c7c2b8 100%);
+}
+
+.mech-key:active:not(:disabled),
+.mech-key-pressed {
+  transform: translateY(3px);
+  box-shadow:
+    0 1px 0 #7b776e,
+    0 2px 4px rgba(0, 0, 0, 0.2),
+    inset 0 2px 4px rgba(0, 0, 0, 0.18);
+}
+
+.mech-key-orange {
+  background: linear-gradient(180deg, #eb642e 0%, #d9531e 68%, #bc4213 100%);
+  border: 1px solid #9f350d;
+  color: #ffffff;
+  box-shadow:
+    0 4px 0 #8a2e0b,
+    0 6px 12px rgba(138, 46, 11, 0.28),
+    inset 0 1px 0 rgba(255, 214, 194, 0.5);
+  transition: transform 110ms cubic-bezier(0.16, 1, 0.3, 1), box-shadow 110ms cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.mech-key-orange:hover:not(:disabled) {
+  background: linear-gradient(180deg, #f26d38 0%, #df5822 70%, #c24515 100%);
+}
+
+.mech-key-orange:active:not(:disabled),
+.mech-key-orange.mech-key-pressed {
+  transform: translateY(3px);
+  box-shadow:
+    0 1px 0 #8a2e0b,
+    0 2px 4px rgba(138, 46, 11, 0.25),
+    inset 0 2px 4px rgba(0, 0, 0, 0.22);
+}
+
+/* Tactile recessed hardware fader */
+input[type="range"].walkman-fader {
+  -webkit-appearance: none;
+  appearance: none;
+  background: transparent;
+  cursor: pointer;
+}
+
+input[type="range"].walkman-fader::-webkit-slider-runnable-track {
+  height: 6px;
+  border-radius: 3px;
+  background: #1a1c1f;
+  box-shadow: inset 0 1px 3px rgba(0, 0, 0, 0.65), 0 1px 0 rgba(255, 255, 255, 0.45);
+}
+
+input[type="range"].walkman-fader::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 22px;
+  height: 16px;
+  margin-top: -5px;
+  border-radius: 3px;
+  background: linear-gradient(180deg, #f3f1ec 0%, #cfcbc2 50%, #b7b2a8 100%);
+  border: 1px solid #726e66;
+  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.35), inset 0 1px 0 rgba(255, 255, 255, 0.9);
+}
+
+input[type="range"].walkman-fader:focus-visible {
+  outline: 2px solid #d9531e;
+  outline-offset: 4px;
+  border-radius: 4px;
+}
+
+input[type="range"].walkman-fader::-moz-range-track {
+  height: 6px;
+  border-radius: 3px;
+  background: #1a1c1f;
+  box-shadow: inset 0 1px 3px rgba(0, 0, 0, 0.65);
+}
+
+input[type="range"].walkman-fader::-moz-range-thumb {
+  width: 22px;
+  height: 16px;
+  border-radius: 3px;
+  background: linear-gradient(180deg, #f3f1ec 0%, #cfcbc2 50%, #b7b2a8 100%);
+  border: 1px solid #726e66;
+  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.35);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .reel-spin {
+    animation: none !important;
+  }
+}

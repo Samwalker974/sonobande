@@ -1,0 +1,6 @@
+{
+  "name": "Sonobande",
+  "description": "Lecteur Walkman rétro de synthèse vocale française avec voix naturelles, réglages de vitesse et de hauteur, export MP3 et bibliothèque de cassettes.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
