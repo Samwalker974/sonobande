@@ -1,4 +1,4 @@
-import { ChevronDown, HardDrive, HelpCircle, Trash2, X } from 'lucide-react';
+import { ChevronDown, HardDrive, HelpCircle, Menu, Trash2, X } from 'lucide-react';
 import { useEffect, useRef, useState } from 'react';
 import type { BrowserStorageMetrics } from '../types/walkman';
 import { formatStorageSizeFr } from '../utils/bookStorage';
@@ -16,6 +16,7 @@ export function TopBar({
 }: TopBarProps) {
   const [popoverOpen, setPopoverOpen] = useState(false);
   const [confirmClear, setConfirmClear] = useState(false);
+  const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const containerRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
@@ -43,6 +44,22 @@ export function TopBar({
     };
   }, [popoverOpen]);
 
+  useEffect(() => {
+    if (!mobileMenuOpen) return;
+
+    const previousOverflow = document.body.style.overflow;
+    document.body.style.overflow = 'hidden';
+    const handleEsc = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') setMobileMenuOpen(false);
+    };
+    document.addEventListener('keydown', handleEsc);
+
+    return () => {
+      document.body.style.overflow = previousOverflow;
+      document.removeEventListener('keydown', handleEsc);
+    };
+  }, [mobileMenuOpen]);
+
   const usedTextLabel = formatStorageSizeFr(storageMetrics.libraryTextBytes);
   const remainingLabel =
     storageMetrics.remainingBytes !== null
@@ -56,15 +73,27 @@ export function TopBar({
   };
 
   return (
+    <>
     <header className="sticky top-0 z-30 border-b border-[#d4cfc4] bg-[#ece9e2]/95 backdrop-blur-sm">
       <div className="mx-auto flex max-w-[1280px] items-center justify-between gap-4 px-5 py-3 sm:gap-8 sm:px-8">
-        {/* Zone 1: Single-element brand wordmark */}
-        <a
-          href="#lecteur"
-          className="font-display text-xl font-bold tracking-tight text-[#1c1e21] whitespace-nowrap shrink-0 focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-[#d9531e]"
-        >
-          Sonobande
-        </a>
+        <div className="flex min-w-0 items-center gap-2.5">
+          <button
+            type="button"
+            onClick={() => setMobileMenuOpen(true)}
+            aria-label="Ouvrir le menu de navigation"
+            aria-expanded={mobileMenuOpen}
+            aria-controls="mobile-navigation"
+            className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg border border-[#c5bfb3] bg-[#f7f5f0] text-[#1c1e21] transition-colors hover:bg-white focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#d9531e] md:hidden"
+          >
+            <Menu className="h-5 w-5" aria-hidden="true" />
+          </button>
+          <a
+            href="#lecteur"
+            className="shrink-0 whitespace-nowrap font-display text-xl font-bold tracking-tight text-[#1c1e21] focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-[#d9531e]"
+          >
+            Sonobande
+          </a>
+        </div>
 
         {/* Zone 2: Concise single-line navigation links */}
         <nav
@@ -256,5 +285,53 @@ export function TopBar({
         </div>
       </div>
     </header>
+    {mobileMenuOpen && (
+      <div className="fixed inset-0 z-50 md:hidden">
+        <button
+          type="button"
+          aria-label="Fermer le menu de navigation"
+          onClick={() => setMobileMenuOpen(false)}
+          className="absolute inset-0 h-full w-full bg-[#1c1e21]/50"
+        />
+        <aside
+          id="mobile-navigation"
+          className="relative flex h-full w-[min(18rem,85vw)] flex-col border-r border-[#d4cfc4] bg-[#f7f5f0] p-5 shadow-2xl"
+        >
+          <div className="mb-6 flex items-center justify-between">
+            <span className="font-display text-lg font-bold text-[#1c1e21]">Navigation</span>
+            <button
+              type="button"
+              onClick={() => setMobileMenuOpen(false)}
+              aria-label="Fermer le menu de navigation"
+              className="flex h-9 w-9 items-center justify-center rounded-lg border border-[#d4cfc4] bg-white text-[#1c1e21] hover:bg-[#ece9e2]"
+            >
+              <X className="h-4 w-4" aria-hidden="true" />
+            </button>
+          </div>
+          <nav aria-label="Navigation mobile" className="flex flex-col gap-1">
+            {[
+              ['#lecteur', 'Lecteur Walkman'],
+              ['#document', 'Importer un texte'],
+              ['#bibliotheque', 'Bibliothèque'],
+              ['#liseuse', 'Liseuse'],
+              ['#chapitres', 'Chapitres & marque-pages'],
+            ].map(([href, label]) => (
+              <a
+                key={href}
+                href={href}
+                onClick={() => setMobileMenuOpen(false)}
+                className="rounded-lg px-3 py-3 text-sm font-medium text-[#34373c] transition-colors hover:bg-[#ece9e2] hover:text-[#b93e0e] focus-visible:outline-2 focus-visible:outline-[#d9531e]"
+              >
+                {label}
+              </a>
+            ))}
+          </nav>
+          <p className="mt-auto border-t border-[#dfdad0] pt-4 text-xs leading-relaxed text-[#6d7076]">
+            Accédez rapidement à votre livre, votre bibliothèque et vos chapitres.
+          </p>
+        </aside>
+      </div>
+    )}
+    </>
   );
 }

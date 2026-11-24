@@ -1,9 +1,4 @@
-export type NeuralVoiceId =
-  | 'fr-FR-DeniseNeural'
-  | 'fr-FR-HenriNeural'
-  | 'fr-FR-VivienneMultilingualNeural'
-  | 'fr-FR-RemyMultilingualNeural'
-  | 'fr-FR-EloiseNeural';
+export type NeuralVoiceId = 'fr_FR-siwis-medium';
 
 export type DocumentSourceType = 'paste' | 'pdf' | 'epub' | 'txt';
 
@@ -20,7 +15,7 @@ export type ChapterTranslationStatus =
 export interface NeuralVoiceProfile {
   id: NeuralVoiceId;
   name: string;
-  gender: 'Féminine' | 'Masculine';
+  gender?: 'Féminine' | 'Masculine';
   timbre: string;
   description: string;
 }

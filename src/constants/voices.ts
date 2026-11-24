@@ -5,39 +5,11 @@ import type {
 
 export const NEURAL_FRENCH_VOICES: NeuralVoiceProfile[] = [
   {
-    id: 'fr-FR-DeniseNeural',
-    name: 'Denise',
+    id: 'fr_FR-siwis-medium',
+    name: 'Siwis',
     gender: 'Féminine',
     timbre: 'Claire et naturelle',
-    description: 'Voix neuronale française fluide et chaleureuse, rapide et très naturelle pour les livres longs.',
-  },
-  {
-    id: 'fr-FR-HenriNeural',
-    name: 'Henri',
-    gender: 'Masculine',
-    timbre: 'Grave et posé',
-    description: 'Timbre masculin radiophonique naturel, idéal pour les essais, récits et documentaires.',
-  },
-  {
-    id: 'fr-FR-VivienneMultilingualNeural',
-    name: 'Vivienne',
-    gender: 'Féminine',
-    timbre: 'Narratrice HD',
-    description: 'Voix neuronale haute définition très expressive, parfaite pour les romans et dialogues.',
-  },
-  {
-    id: 'fr-FR-RemyMultilingualNeural',
-    name: 'Rémy',
-    gender: 'Masculine',
-    timbre: 'Conteur HD',
-    description: 'Voix masculine haute définition au phrasé vivant, idéale pour une écoute immersive.',
-  },
-  {
-    id: 'fr-FR-EloiseNeural',
-    name: 'Éloïse',
-    gender: 'Féminine',
-    timbre: 'Douce et vive',
-    description: 'Diction légère et articulée, agréable pour les articles et récits contemporains.',
+    description: 'Voix Piper française téléchargée une fois puis utilisée hors ligne depuis le stockage privé du navigateur.',
   },
 ];
 

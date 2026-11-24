@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
+import * as vits from '@diffusionstudio/vits-web';
 import { BookLibrary } from './components/BookLibrary';
 import { ChapterList } from './components/ChapterList';
 import { ChapterReader } from './components/ChapterReader';
@@ -20,7 +21,11 @@ import type {
   SavedBookRecord,
   TranslationProgress,
 } from './types/walkman';
-import { processAudioSpeedPitch } from './utils/audioDsp';
+import {
+  DEFAULT_PAUSE_DURATION_SECONDS,
+  insertSilenceAtOffsets,
+  processAudioSpeedPitch,
+} from './utils/audioDsp';
 import {
   applyChapterTranslation,
   buildChaptersFromRawText,
@@ -66,6 +71,39 @@ function buildDraftPreview(bookSession: BookSession): string {
     : bookSession.chapters.map((c) => `${c.sourceTitle}\n\n${c.sourceText}`).join('\n\n');
 }
 
+async function isVoiceModelCached(voiceId: NeuralVoiceId): Promise<boolean> {
+  if (window.localStorage.getItem(`sonobande:voice:${voiceId}:installed`) === 'true') {
+    return true;
+  }
+
+  if (!navigator.storage?.getDirectory) return false;
+
+  try {
+    const originDirectory = await navigator.storage.getDirectory();
+    const piperDirectory = await originDirectory.getDirectoryHandle('piper');
+    await piperDirectory.getFileHandle(`${voiceId}.onnx`);
+    await piperDirectory.getFileHandle(`${voiceId}.onnx.json`);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function waitForVoiceModelCache(
+  voiceId: NeuralVoiceId,
+  attempts = 30
+): Promise<boolean> {
+  for (let attempt = 0; attempt < attempts; attempt++) {
+    if (await isVoiceModelCached(voiceId)) return true;
+    await new Promise((resolve) => window.setTimeout(resolve, 250));
+  }
+  return false;
+}
+
+function supportsVoiceModelStorage(): boolean {
+  return window.isSecureContext && Boolean(navigator.storage?.getDirectory);
+}
+
 export default function App() {
   // Active book state (text + bookmarks + stop position are persisted in IndexedDB; MP3/audio stay strictly in RAM)
   const [session, setSession] = useState<BookSession | null>(null);
@@ -81,8 +119,13 @@ export default function App() {
   const [draftTitle, setDraftTitle] = useState('');
   const [draftText, setDraftText] = useState('');
 
-  // Neural Edge TTS voice settings
-  const [neuralVoiceId, setNeuralVoiceId] = useState<NeuralVoiceId>('fr-FR-DeniseNeural');
+  const neuralVoiceId: NeuralVoiceId = 'fr_FR-siwis-medium';
+  const [voiceModelStatus, setVoiceModelStatus] = useState<
+    'checking' | 'missing' | 'downloading' | 'ready' | 'error' | 'unsupported'
+  >('checking');
+  const [showVoiceDownload, setShowVoiceDownload] = useState(false);
+  const [voiceDownloadPercent, setVoiceDownloadPercent] = useState(0);
+  const [voiceDownloadMessage, setVoiceDownloadMessage] = useState('');
 
   // English -> French translation settings & progress
   const [autoTranslateToFrench, setAutoTranslateToFrench] = useState<boolean>(true);
@@ -91,6 +134,9 @@ export default function App() {
   // Listening personalization
   const [speed, setSpeed] = useState<number>(1.0);
   const [pitchSemitones, setPitchSemitones] = useState<number>(0);
+  const [pauseDurationSeconds, setPauseDurationSeconds] = useState(
+    DEFAULT_PAUSE_DURATION_SECONDS
+  );
   const [volume, setVolume] = useState<number>(0.88);
   const [muted, setMuted] = useState<boolean>(false);
 
@@ -174,21 +220,53 @@ export default function App() {
     };
   }, []);
 
+  useEffect(() => {
+    let cancelled = false;
+
+    void (async () => {
+      if (!supportsVoiceModelStorage()) {
+        if (cancelled) return;
+        setVoiceModelStatus('unsupported');
+        setVoiceDownloadMessage(
+          'Le stockage des modèles vocaux exige une origine sécurisée. Ouvrez cette application sur le même ordinateur via http://localhost:3000/sonobande/ ou utilisez la version HTTPS.'
+        );
+        setShowVoiceDownload(true);
+        return;
+      }
+
+      try {
+        const storedVoice = await isVoiceModelCached(neuralVoiceId);
+        if (cancelled) return;
+
+        if (storedVoice) {
+          setVoiceModelStatus('ready');
+        } else {
+          setVoiceModelStatus('missing');
+          setShowVoiceDownload(true);
+        }
+      } catch {
+        if (cancelled) return;
+        setVoiceModelStatus('error');
+        setShowVoiceDownload(true);
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [neuralVoiceId]);
+
   const translateChapter = useCallback(
-    async (
-      chapterIndex: number,
-      signal?: AbortSignal,
-      force = false
-    ): Promise<ChapterItem | null> => {
+    async (chapterIndex: number, signal?: AbortSignal): Promise<ChapterItem | null> => {
       const currentSession = sessionRef.current;
       if (!currentSession) return null;
       const target = currentSession.chapters[chapterIndex];
       if (!target) return null;
 
-      if (!force && target.translationStatus === 'translated') {
+      if (target.translationStatus === 'translated') {
         return target;
       }
-      if (!force && target.translationStatus === 'french_native') {
+      if (target.translationStatus === 'french_native') {
         return target;
       }
 
@@ -196,6 +274,9 @@ export default function App() {
       const existingPromise = inflightTranslationsRef.current.get(inflightKey);
       if (existingPromise) {
         return existingPromise;
+      }
+      if (target.translationStatus === 'translating') {
+        return target;
       }
 
       const prevStatus = target.translationStatus;
@@ -331,6 +412,7 @@ export default function App() {
     neuralVoiceId,
     speed,
     pitchSemitones,
+    pauseDurationSeconds,
     volume,
     muted,
     onChapterIndexChange: (nextIdx) => {
@@ -412,7 +494,7 @@ export default function App() {
     ? savedBooks.find((b) => b.id === session.id) ?? null
     : null;
 
-  // Silently prefetch the next English chapter in background when auto-translate is active
+  // Prefetch the next English chapter when auto-translate is active
   // so flipping to the next chapter or listening continuously is instant
   useEffect(() => {
     if (!session || !autoTranslateToFrench || translationProgress) return;
@@ -420,8 +502,13 @@ export default function App() {
     const nextIdx = activeChapterIndex + 1;
     const nextChapter = session.chapters[nextIdx];
     if (nextChapter && nextChapter.translationStatus === 'needs_translation') {
-      void translateChapter(nextIdx).catch(() => {
-        // Silent background prefetch; errors surface if the user explicitly opens that chapter
+      void translateChapter(nextIdx).catch((err) => {
+        if (err instanceof Error && err.name === 'AbortError') return;
+        setErrorMessage(
+          err instanceof Error
+            ? err.message
+            : `Impossible de traduire le chapitre ${nextIdx + 1} en français.`
+        );
       });
     }
   }, [
@@ -541,12 +628,12 @@ export default function App() {
     const currentSession = sessionRef.current;
     const ch = currentSession?.chapters[chapterIndex];
     if (!currentSession || !ch) return;
+    if (ch.translationStatus !== 'needs_translation') return;
 
     setErrorMessage(null);
 
-    const force = ch.translationStatus === 'french_native';
     try {
-      await translateChapter(chapterIndex, undefined, force);
+      await translateChapter(chapterIndex);
     } catch (err) {
       if (err instanceof Error && err.name === 'AbortError') return;
       setErrorMessage(
@@ -930,7 +1017,7 @@ export default function App() {
 
       const totalSegments = preparedChapters.reduce((sum, ch) => sum + ch.segments.length, 0);
       const isDefaultTuning = Math.abs(speed - 1.0) < 0.01 && Math.abs(pitchSemitones) < 0.05;
-      const canFastConcatNeuralMp3 = isDefaultTuning;
+      const canFastConcatNeuralMp3 = isDefaultTuning && pauseDurationSeconds === 0;
 
       setExportProgress({
         scope,
@@ -1006,7 +1093,15 @@ export default function App() {
               speed,
               pitchSemitones
             );
-            builder.appendSamples(shaped, sampleRate);
+            const shapedWithPauses = insertSilenceAtOffsets(
+              shaped,
+              decoded.samples.length,
+              decoded.pauseOffsets,
+              sampleRate,
+              pauseDurationSeconds,
+              segIdx + 1 < chapter.segments.length
+            );
+            builder.appendSamples(shapedWithPauses, sampleRate);
           }
 
           completed++;
@@ -1087,8 +1182,115 @@ export default function App() {
   const isActiveChapterTranslating =
     activeChapter?.translationStatus === 'translating' || Boolean(translationProgress);
 
+  const handleDownloadVoiceModel = async () => {
+    if (!supportsVoiceModelStorage()) {
+      setVoiceModelStatus('unsupported');
+      setVoiceDownloadMessage(
+        'Le stockage des modèles vocaux exige une origine sécurisée. Ouvrez cette application sur le même ordinateur via http://localhost:3000/sonobande/ ou utilisez la version HTTPS.'
+      );
+      return;
+    }
+
+    setVoiceModelStatus('downloading');
+    setVoiceDownloadPercent(0);
+    setVoiceDownloadMessage('Préparation du téléchargement…');
+
+    try {
+      await vits.download(neuralVoiceId, (progress) => {
+        const percent =
+          progress.total > 0 ? Math.round((progress.loaded / progress.total) * 100) : 0;
+        setVoiceDownloadPercent(percent);
+        setVoiceDownloadMessage(
+          percent > 0 ? `Téléchargement de la voix : ${percent}%` : 'Téléchargement de la voix…'
+        );
+      });
+
+      const isCached = await waitForVoiceModelCache(neuralVoiceId);
+      if (isCached) {
+        window.localStorage.setItem(`sonobande:voice:${neuralVoiceId}:installed`, 'true');
+        setVoiceModelStatus('ready');
+        setShowVoiceDownload(false);
+        setVoiceDownloadPercent(100);
+        setErrorMessage(null);
+      } else {
+        setVoiceModelStatus('error');
+        setVoiceDownloadMessage(
+          'Le modèle a été téléchargé mais les fichiers n’ont pas pu être vérifiés dans le stockage du navigateur.'
+        );
+      }
+    } catch (error) {
+      setVoiceModelStatus('error');
+      setVoiceDownloadMessage(
+        error instanceof Error ? error.message : 'Impossible de télécharger la voix.'
+      );
+    }
+  };
+
   return (
     <div className="min-h-screen bg-[#ece9e2] text-[#1c1e21]">
+      {showVoiceDownload && (
+        <div className="fixed inset-0 z-[100] flex items-center justify-center bg-[#1c1e21]/55 px-5">
+          <div
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="voice-download-title"
+            className="w-full max-w-md rounded-2xl border border-[#d4cfc4] bg-[#f7f5f0] p-6 shadow-xl"
+          >
+            <p className="font-mono text-xs font-semibold uppercase tracking-wider text-[#b93e0e]">
+              Première utilisation
+            </p>
+            <h2 id="voice-download-title" className="mt-1 font-display text-xl font-bold">
+              Télécharger {getNeuralVoiceById(neuralVoiceId).name}
+            </h2>
+            <p className="mt-2 text-sm leading-relaxed text-[#55585e]">
+              {voiceModelStatus === 'unsupported'
+                ? 'Cette adresse HTTP ne permet pas au navigateur d’enregistrer le modèle vocal.'
+                : <>Le modèle Piper <span className="font-mono">fr_FR-siwis-medium</span> sera enregistré dans le stockage privé de votre navigateur. Il pourra ensuite être utilisé hors ligne.</>}
+            </p>
+
+            {voiceModelStatus === 'downloading' ? (
+              <div className="mt-5">
+                <div className="mb-2 flex items-center justify-between text-xs text-[#55585e]">
+                  <span>{voiceDownloadMessage}</span>
+                  <span className="font-mono tabular-nums">{voiceDownloadPercent}%</span>
+                </div>
+                <div className="h-2 overflow-hidden rounded-full bg-[#ddd8cc]">
+                  <div
+                    className="h-full rounded-full bg-[#d9531e] transition-[width]"
+                    style={{ width: `${voiceDownloadPercent}%` }}
+                  />
+                </div>
+              </div>
+            ) : voiceModelStatus !== 'unsupported' ? (
+              <button
+                type="button"
+                onClick={() => void handleDownloadVoiceModel()}
+                className="mt-5 w-full rounded-lg bg-[#d9531e] px-4 py-2.5 text-sm font-semibold text-white hover:bg-[#c24515]"
+              >
+                Télécharger le modèle vocal
+              </button>
+            ) : null}
+
+            {(voiceModelStatus === 'error' || voiceModelStatus === 'unsupported') &&
+              voiceDownloadMessage && (
+              <p className="mt-3 rounded-lg border border-[#d49a89] bg-[#fbefeb] px-3 py-2 text-xs text-[#8a280b]">
+                {voiceDownloadMessage}
+              </p>
+            )}
+
+            {voiceModelStatus !== 'downloading' && (
+              <button
+                type="button"
+                onClick={() => setShowVoiceDownload(false)}
+                className="mt-3 w-full rounded-lg border border-[#cfc9bd] bg-white px-4 py-2 text-xs font-medium text-[#25272b] hover:bg-[#f0ede5]"
+              >
+                Plus tard
+              </button>
+            )}
+          </div>
+        </div>
+      )}
+
       <TopBar
         storageMetrics={storageMetrics}
         hasAnyData={Boolean(savedBooks.length > 0 || session || draftText.trim())}
@@ -1128,6 +1330,7 @@ export default function App() {
               vuLevel={audio.vuLevel}
               speed={speed}
               pitchSemitones={pitchSemitones}
+              pauseDurationSeconds={pauseDurationSeconds}
               volume={volume}
               muted={muted}
               exportProgress={exportProgress}
@@ -1147,9 +1350,11 @@ export default function App() {
               onSeekSegment={audio.seekSegment}
               onSpeedChange={(s) => setSpeed(Math.round(s * 100) / 100)}
               onPitchChange={(p) => setPitchSemitones(Math.round(p * 10) / 10)}
+              onPauseDurationChange={setPauseDurationSeconds}
               onResetTuning={() => {
                 setSpeed(1.0);
                 setPitchSemitones(0);
+                setPauseDurationSeconds(DEFAULT_PAUSE_DURATION_SECONDS);
               }}
               onVolumeChange={(v) => {
                 setVolume(v);
@@ -1176,7 +1381,6 @@ export default function App() {
               autoTranslateToFrench={autoTranslateToFrench}
               translationProgress={translationProgress}
               errorMessage={errorMessage}
-              onNeuralVoiceChange={setNeuralVoiceId}
               onDraftTitleChange={setDraftTitle}
               onDraftTextChange={(val) => {
                 setDraftText(val);
@@ -1246,7 +1450,7 @@ export default function App() {
         />
       </main>
 
-      <footer className="mx-auto max-w-[1280px] border-t border-[#d8d3c8] px-5 py-6 text-xs text-[#64676d] sm:px-8">
+      <footer className="mx-auto max-w-[1280px] border-t border-[#d8d3c8] pl-4 pr-[4.5rem] py-6 text-xs text-[#64676d] sm:pl-8 sm:pr-20">
         <div className="flex flex-wrap items-center justify-between gap-2">
           <span>
             Sonobande — Lecteur Walkman · Bibliothèque locale (texte seul) · Traduction EN → FR

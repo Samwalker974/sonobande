@@ -178,17 +178,6 @@ export function ChapterReader({
             </>
           )}
 
-          {isReadyInFrench && session.detectedLanguage === 'fr' && !isTranslated && (
-            <button
-              type="button"
-              onClick={() => onTranslateChapter(activeChapterIndex)}
-              title="Traduire ce chapitre de l'anglais vers le français"
-              className="inline-flex items-center gap-1.5 rounded-lg border border-[#cfc9bd] bg-white px-3 py-2 text-xs font-medium text-[#35383d] whitespace-nowrap transition-colors hover:bg-[#efece4] focus-visible:outline-2 focus-visible:outline-[#d9531e]"
-            >
-              <Languages className="h-3.5 w-3.5 text-[#d9531e]" aria-hidden="true" />
-              <span>Traduire EN → FR</span>
-            </button>
-          )}
         </div>
       </div>
 

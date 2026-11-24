@@ -3,9 +3,31 @@ import assert from 'node:assert/strict';
 import {
   encodeWavBuffer,
   generateDemoTapeWav,
+  insertSilenceAtOffsets,
   parseWavBuffer,
   processAudioSpeedPitch,
 } from './audioDsp';
+
+test('insertSilenceAtOffsets adds pauses at punctuation positions', () => {
+  const samples = new Float32Array([0.25, -0.5, 0.75, 0.125]);
+  const output = insertSilenceAtOffsets(samples, 4, [2], 4, 0.5);
+
+  assert.deepEqual([...output], [0.25, -0.5, 0, 0, 0.75, 0.125]);
+  assert.equal(
+    insertSilenceAtOffsets(samples, 4, [4], 4, 0.5),
+    samples,
+    'A terminal punctuation mark should not add trailing silence by default'
+  );
+  assert.deepEqual(
+    [...insertSilenceAtOffsets(samples, 4, [4], 4, 0.5, true)],
+    [0.25, -0.5, 0.75, 0.125, 0, 0]
+  );
+
+  assert.deepEqual(
+    [...insertSilenceAtOffsets(new Float32Array([1, 2, 3, 4, 5, 6]), 3, [1], 4, 0.5)],
+    [1, 2, 0, 0, 3, 4, 5, 6]
+  );
+});
 
 function generateSine(freqHz: number, durationSec: number, sampleRate = 24000): Float32Array {
   const len = Math.round(durationSec * sampleRate);

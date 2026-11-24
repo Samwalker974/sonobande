@@ -5,7 +5,6 @@ import http from 'http';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { GoogleGenAI, ThinkingLevel } from '@google/genai';
-import { MsEdgeTTS, OUTPUT_FORMAT } from 'msedge-tts';
 import {
   buildParagraphSentencePlan,
   reassembleParagraphs,
@@ -15,14 +14,6 @@ import { sanitizeTextForSpeech, stripParasiticCharacters } from './src/utils/spe
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
-
-const ALLOWED_NEURAL_VOICES = new Set([
-  'fr-FR-DeniseNeural',
-  'fr-FR-HenriNeural',
-  'fr-FR-VivienneMultilingualNeural',
-  'fr-FR-RemyMultilingualNeural',
-  'fr-FR-EloiseNeural',
-]);
 
 function splitFrenchTextIntoChunks(text: string, maxChars = 1400): string[] {
   const cleaned = text.trim();
@@ -109,60 +100,6 @@ function buildWavBuffer(
   header.writeUInt32LE(pcmData.length, 40);
 
   return Buffer.concat([header, pcmData]);
-}
-
-function sanitizeTextForNeuralSsml(text: string): string {
-  return sanitizeTextForSpeech(text)
-    // Escape XML reserved chars just in case any remain before SSML serialization
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/\s+/g, ' ')
-    .trim();
-}
-
-async function synthesizeNeuralChunkWithRetry(
-  text: string,
-  voiceName: string,
-  maxRetries = 2
-): Promise<Buffer> {
-  const safeText = sanitizeTextForNeuralSsml(text);
-  if (!safeText) {
-    throw new Error('Texte vide pour la synthèse neuronale.');
-  }
-
-  let lastError: unknown;
-  for (let attempt = 0; attempt <= maxRetries; attempt++) {
-    const tts = new MsEdgeTTS({
-      connectionTimeoutMs: 12000,
-      synthesisTimeoutMs: 30000,
-    });
-    try {
-      await tts.setMetadata(voiceName, OUTPUT_FORMAT.AUDIO_24KHZ_96KBITRATE_MONO_MP3);
-      const { audioStream } = tts.toStream(safeText);
-      const chunks: Buffer[] = [];
-      for await (const chunk of audioStream) {
-        chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
-      }
-      const mp3Buffer = Buffer.concat(chunks);
-      if (mp3Buffer.length === 0) {
-        throw new Error("Le moteur neuronal n'a renvoyé aucune donnée audio.");
-      }
-      return mp3Buffer;
-    } catch (error) {
-      lastError = error;
-      if (attempt === maxRetries) break;
-      await new Promise((resolve) => setTimeout(resolve, 450 * (attempt + 1)));
-    } finally {
-      try {
-        tts.close();
-      } catch {
-        // Ignore close errors
-      }
-    }
-  }
-
-  throw lastError;
 }
 
 const TRANSLATE_SYSTEM_INSTRUCTION =
@@ -407,61 +344,6 @@ async function createServer() {
 
   app.get('/api/health', (_req, res) => {
     res.json({ ok: true });
-  });
-
-  app.post('/api/tts-neural', async (req, res) => {
-    try {
-      const rawText = typeof req.body?.text === 'string' ? req.body.text.trim() : '';
-      const voiceName =
-        typeof req.body?.voiceName === 'string' && ALLOWED_NEURAL_VOICES.has(req.body.voiceName)
-          ? req.body.voiceName
-          : 'fr-FR-DeniseNeural';
-
-      if (!rawText) {
-        res.status(400).json({
-          error: 'Veuillez saisir un texte avant de lancer la lecture.',
-        });
-        return;
-      }
-
-      if (rawText.length > 5000) {
-        res.status(400).json({
-          error: 'Le segment dépasse la limite maximale de 5 000 caractères.',
-        });
-        return;
-      }
-
-      const spokenText = sanitizeTextForSpeech(rawText);
-      if (!spokenText) {
-        const silentPcm = Buffer.alloc(24000 * 2 * 0.25); // 250ms clean silence
-        const silentWav = buildWavBuffer(silentPcm, 24000, 1, 16);
-        res.json({
-          audioBase64: silentWav.toString('base64'),
-          mimeType: 'audio/wav',
-        });
-        return;
-      }
-
-      const chunks = splitFrenchTextIntoChunks(spokenText, 1800);
-      const mp3Buffers: Buffer[] = [];
-
-      for (const chunk of chunks) {
-        const buf = await synthesizeNeuralChunkWithRetry(chunk, voiceName);
-        mp3Buffers.push(buf);
-      }
-
-      const combinedMp3 = Buffer.concat(mp3Buffers);
-      res.json({
-        audioBase64: combinedMp3.toString('base64'),
-        mimeType: 'audio/mpeg',
-      });
-    } catch (error) {
-      console.error('Erreur /api/tts-neural:', error);
-      res.status(502).json({
-        error:
-          'Impossible de synthétiser la voix neuronale pour le moment. Réessayez dans quelques instants.',
-      });
-    }
   });
 
   app.post('/api/translate', async (req, res) => {

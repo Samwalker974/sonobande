@@ -167,6 +167,40 @@ export function splitForLocalSpeech(text: string): string[] {
   return splitTextIntoSegments(text, LOCAL_SPEECH_MAX_CHARS);
 }
 
+export function splitTextAtPausePunctuation(
+  text: string
+): Array<{ text: string; pauseAfter: boolean }> {
+  const phrases: Array<{ text: string; pauseAfter: boolean }> = [];
+  let start = 0;
+
+  for (let index = 0; index < text.length; index++) {
+    const punctuation = text[index];
+    if (!punctuation || !/[,.;:!?…]/u.test(punctuation)) continue;
+    if (
+      punctuation === '.' &&
+      /\d/u.test(text[index - 1] ?? '') &&
+      /\d/u.test(text[index + 1] ?? '')
+    ) {
+      continue;
+    }
+
+    let end = index + 1;
+    while (end < text.length && /[,.;:!?…]/u.test(text[end] ?? '')) end++;
+
+    const phrase = text.slice(start, end).trim();
+    if (phrase) phrases.push({ text: phrase, pauseAfter: true });
+    start = end;
+    index = end - 1;
+  }
+
+  const remainder = text.slice(start).trim();
+  if (remainder) phrases.push({ text: remainder, pauseAfter: false });
+  if (phrases.length === 0 && text.trim()) {
+    phrases.push({ text: text.trim(), pauseAfter: false });
+  }
+  return phrases;
+}
+
 /**
  * Splits a raw chapter (potentially very long) into sub-chapters if it exceeds maxChapterChars.
  */

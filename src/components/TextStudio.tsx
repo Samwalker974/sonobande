@@ -13,7 +13,6 @@ import { useRef, useState } from 'react';
 import {
   FRENCH_SAMPLE_SCRIPTS,
   getNeuralVoiceById,
-  NEURAL_FRENCH_VOICES,
 } from '../constants/voices';
 import type {
   BookSession,
@@ -35,7 +34,6 @@ interface TextStudioProps {
   autoTranslateToFrench: boolean;
   translationProgress: TranslationProgress | null;
   errorMessage: string | null;
-  onNeuralVoiceChange: (voiceId: NeuralVoiceId) => void;
   onDraftTitleChange: (title: string) => void;
   onDraftTextChange: (text: string) => void;
   onImportFile: (file: File) => void;
@@ -58,7 +56,6 @@ export function TextStudio({
   autoTranslateToFrench,
   translationProgress,
   errorMessage,
-  onNeuralVoiceChange,
   onDraftTitleChange,
   onDraftTextChange,
   onImportFile,
@@ -83,6 +80,10 @@ export function TextStudio({
   const remainingToTranslate = session
     ? session.chapters.filter((ch) => ch.translationStatus === 'needs_translation').length
     : 0;
+  const translatingChapterLabels =
+    session?.chapters.flatMap((chapter, index) =>
+      chapter.translationStatus === 'translating' ? [`Chapitre ${index + 1}`] : []
+    ) ?? [];
 
   const handleDrop = (e: React.DragEvent) => {
     e.preventDefault();
@@ -96,15 +97,18 @@ export function TextStudio({
   return (
     <section
       id="document"
-      aria-label="Importation de livre et réglages de voix"
+      aria-label="Ajouter un livre ou un texte"
       className="flex h-full flex-col justify-between rounded-2xl border border-[#d4cfc4] bg-[#f7f5f0] p-4 sm:p-6"
     >
       <div className="flex flex-1 flex-col">
         {/* Header + Ephemeral Privacy Note */}
         <div className="mb-4">
           <h1 className="font-display text-2xl font-bold tracking-tight text-[#1c1e21] [text-wrap:balance]">
-            Écouter un livre ou un texte long
+            Ajouter un livre ou un texte
           </h1>
+          <p className="mt-1 text-sm text-[#55585e]">
+            Importez un fichier ou collez votre texte, puis appuyez sur « Écouter maintenant ».
+          </p>
           <p className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-[#55585e]">
             <span className="inline-flex items-center gap-1 font-medium text-[#2c5e3b]">
               <ShieldCheck className="h-3.5 w-3.5" aria-hidden="true" />
@@ -115,52 +119,11 @@ export function TextStudio({
           </p>
         </div>
 
-        {/* Neural voice selection */}
-        <div className="mb-4 space-y-2.5">
-            <div>
-              <span className="mb-1.5 block text-xs font-semibold text-[#34373c]">
-                Voix neuronale française (illimitée, non robotique)
-              </span>
-              <div
-                role="radiogroup"
-                aria-label="Sélection de la voix neuronale française illimitée"
-                className="grid grid-cols-2 gap-2 sm:grid-cols-5"
-              >
-                {NEURAL_FRENCH_VOICES.map((voice) => {
-                  const selected = voice.id === neuralVoiceId;
-                  return (
-                    <button
-                      key={voice.id}
-                      type="button"
-                      role="radio"
-                      aria-checked={selected}
-                      onClick={() => onNeuralVoiceChange(voice.id)}
-                      className={`flex flex-col items-start rounded-lg border px-2.5 py-2 text-left transition-colors focus-visible:outline-2 focus-visible:outline-[#d9531e] ${
-                        selected
-                          ? 'border-[#1c1e21] bg-[#1c1e21] text-[#f7f5f0]'
-                          : 'border-[#d4cfc4] bg-white text-[#1c1e21] hover:border-[#a9a396]'
-                      }`}
-                    >
-                      <span className="font-display text-sm font-semibold whitespace-nowrap">
-                        {voice.name}
-                      </span>
-                      <span
-                        className={`mt-0.5 text-[11px] leading-tight ${
-                          selected ? 'text-[#cfcbc2]' : 'text-[#5b5e64]'
-                        }`}
-                      >
-                        {voice.timbre}
-                      </span>
-                    </button>
-                  );
-                })}
-              </div>
-            </div>
-            <p className="text-xs text-[#55585e]">
-              <span className="font-semibold text-[#1c1e21]">{selectedNeuralVoice.name}</span>
-              <span className="mx-1" aria-hidden="true">·</span>
-              <span>{selectedNeuralVoice.description}</span>
-            </p>
+        <div className="mb-3 flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-[#55585e]">
+          <span className="font-semibold text-[#34373c]">Voix de lecture :</span>
+          <span className="font-semibold text-[#1c1e21]">{selectedNeuralVoice.name}</span>
+          <span aria-hidden="true">·</span>
+          <span>{selectedNeuralVoice.timbre}</span>
         </div>
 
         {/* Local PDF / EPUB / TXT Dropzone */}
@@ -236,14 +199,29 @@ export function TextStudio({
                 />
                 <div className="min-w-0">
                   <p className="text-xs font-semibold text-[#1c1e21]">
-                    Texte anglais détecté · Traduction neuronale FR illimitée (locale, sans quota)
+                    Texte anglais détecté · traduction en français
                   </p>
                   <p className="mt-0.5 text-[11px] text-[#55585e]">
-                    {session
-                      ? `${translatedCount} / ${session.chapters.length} ${
-                          session.chapters.length > 1 ? 'chapitres traduits' : 'chapitre traduit'
-                        } en français`
-                      : 'Découpez ou lancez la lecture pour traduire automatiquement en français.'}
+                    {translationProgress || translatingChapterLabels.length > 0 ? (
+                      <span role="status" className="inline-flex items-center gap-1">
+                        <Loader2 className="h-3 w-3 animate-spin text-[#d9531e]" aria-hidden="true" />
+                        <span>
+                          {translationProgress
+                            ? translationProgress.currentLabel
+                            : `Traduction en cours — ${translatingChapterLabels.join(', ')}`}
+                        </span>
+                      </span>
+                    ) : session ? (
+                      <>
+                        {translatedCount} / {session.chapters.length} chapitres déjà traduits
+                        {' · '}
+                        {remainingToTranslate === 1
+                          ? '1 à traduire'
+                          : `${remainingToTranslate} à traduire`}
+                      </>
+                    ) : (
+                      'La traduction en français démarrera avec la lecture.'
+                    )}
                   </p>
                 </div>
               </div>
@@ -260,19 +238,24 @@ export function TextStudio({
                       : 'border-[#c5bfb3] bg-white text-[#35383d] hover:bg-[#faf8f4]'
                   }`}
                 >
-                  <span>Traduction auto : {autoTranslateToFrench ? 'Oui' : 'Manuelle'}</span>
+                  <span>
+                    Traduction automatique : {autoTranslateToFrench ? 'Activée' : 'Désactivée'}
+                  </span>
                 </button>
 
-                {session && remainingToTranslate > 0 && !translationProgress && (
-                  <button
-                    type="button"
-                    onClick={onTranslateAllChapters}
-                    data-testid="translate-all-button"
-                    className="rounded-lg bg-[#d9531e] px-3 py-1.5 text-xs font-semibold text-white whitespace-nowrap transition-colors hover:bg-[#c24515] focus-visible:outline-2 focus-visible:outline-[#1c1e21]"
-                  >
-                    Traduire tout le livre
-                  </button>
-                )}
+                {session &&
+                  remainingToTranslate > 0 &&
+                  !translationProgress &&
+                  translatingChapterLabels.length === 0 && (
+                    <button
+                      type="button"
+                      onClick={onTranslateAllChapters}
+                      data-testid="translate-all-button"
+                      className="rounded-lg bg-[#d9531e] px-3 py-1.5 text-xs font-semibold text-white whitespace-nowrap transition-colors hover:bg-[#c24515] focus-visible:outline-2 focus-visible:outline-[#1c1e21]"
+                    >
+                      Traduire tout le livre
+                    </button>
+                  )}
               </div>
             </div>
 
@@ -319,7 +302,7 @@ export function TextStudio({
                 htmlFor="french-text-input"
                 className="text-xs font-semibold text-[#34373c]"
               >
-                Ou coller un texte long (sans limite)
+                Ou collez votre texte
               </label>
             </div>
             <div className="flex items-center gap-2.5 text-xs text-[#55585e]">
@@ -404,7 +387,8 @@ export function TextStudio({
           <button
             type="button"
             onClick={() => onLoadPastedText(true)}
-            className="mech-key-orange flex min-h-[46px] items-center justify-center gap-2 rounded-xl px-4 py-2.5 text-sm font-semibold text-white focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#1c1e21]"
+            disabled={!draftText.trim() || isImportingFile}
+            className="mech-key-orange flex min-h-[46px] items-center justify-center gap-2 rounded-xl px-4 py-2.5 text-sm font-semibold text-white focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#1c1e21] disabled:cursor-not-allowed disabled:opacity-45"
           >
             <Play className="h-4 w-4 fill-current" aria-hidden="true" />
             <span>Écouter maintenant</span>
@@ -413,7 +397,8 @@ export function TextStudio({
           <button
             type="button"
             onClick={() => onLoadPastedText(false)}
-            className="flex min-h-[46px] items-center justify-center gap-2 rounded-xl border border-[#c5bfb3] bg-white px-4 py-2.5 text-sm font-semibold text-[#1c1e21] transition-colors hover:bg-[#efece4] focus-visible:outline-2 focus-visible:outline-[#d9531e]"
+            disabled={!draftText.trim() || isImportingFile}
+            className="flex min-h-[46px] items-center justify-center gap-2 rounded-xl border border-[#c5bfb3] bg-white px-4 py-2.5 text-sm font-semibold text-[#1c1e21] transition-colors hover:bg-[#efece4] focus-visible:outline-2 focus-visible:outline-[#d9531e] disabled:cursor-not-allowed disabled:opacity-45"
           >
             <BookOpen className="h-4 w-4" aria-hidden="true" />
             <span>
@@ -421,6 +406,11 @@ export function TextStudio({
             </span>
           </button>
         </div>
+        {!draftText.trim() && (
+          <p className="text-center text-xs text-[#64676d]">
+            Choisissez un fichier ou collez un texte pour commencer.
+          </p>
+        )}
       </div>
     </section>
   );

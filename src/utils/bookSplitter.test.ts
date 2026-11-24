@@ -9,6 +9,7 @@ import {
   formatTimecode,
   sanitizeMp3Filename,
   splitForLocalSpeech,
+  splitTextAtPausePunctuation,
   splitTextIntoSegments,
 } from './bookSplitter';
 
@@ -96,6 +97,21 @@ test('splitTextIntoSegments and splitForLocalSpeech respect character bounds', (
   for (const chunk of localChunks) {
     assert.ok(chunk.length <= 220);
   }
+});
+
+test('splitTextAtPausePunctuation preserves commas and sentence-ending punctuation', () => {
+  assert.deepEqual(
+    splitTextAtPausePunctuation('Bonjour, monsieur. Comment ça va ? Oui !'),
+    [
+      { text: 'Bonjour,', pauseAfter: true },
+      { text: 'monsieur.', pauseAfter: true },
+      { text: 'Comment ça va ?', pauseAfter: true },
+      { text: 'Oui !', pauseAfter: true },
+    ]
+  );
+  assert.deepEqual(splitTextAtPausePunctuation('Il mesure 3.14 mètres.'), [
+    { text: 'Il mesure 3.14 mètres.', pauseAfter: true },
+  ]);
 });
 
 test('sanitizeMp3Filename and formatPitchLabel work cleanly', () => {

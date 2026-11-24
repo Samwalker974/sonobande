@@ -8,6 +8,50 @@ export interface DecodedWav {
   sampleRate: number;
 }
 
+export const DEFAULT_PAUSE_DURATION_SECONDS = 0.3;
+
+export function insertSilenceAtOffsets(
+  samples: Float32Array,
+  sourceSampleLength: number,
+  pauseOffsets: readonly number[],
+  sampleRate: number,
+  durationSeconds: number,
+  includeEndOffset = false
+): Float32Array {
+  if (
+    samples.length === 0 ||
+    sourceSampleLength <= 0 ||
+    pauseOffsets.length === 0 ||
+    !Number.isFinite(sampleRate) ||
+    !Number.isFinite(durationSeconds)
+  ) {
+    return samples;
+  }
+
+  const silenceLength = Math.max(0, Math.round(sampleRate * durationSeconds));
+  if (silenceLength === 0) return samples;
+
+  const scale = samples.length / sourceSampleLength;
+  const insertionPoints = [...new Set(
+    pauseOffsets
+      .filter((offset) => offset > 0 && (offset < sourceSampleLength || includeEndOffset))
+      .map((offset) => Math.round(offset * scale))
+      .filter((offset) => offset <= samples.length)
+  )].sort((a, b) => a - b);
+  if (insertionPoints.length === 0) return samples;
+
+  const output = new Float32Array(samples.length + silenceLength * insertionPoints.length);
+  let sourceOffset = 0;
+  let outputOffset = 0;
+  for (const point of insertionPoints) {
+    output.set(samples.subarray(sourceOffset, point), outputOffset);
+    outputOffset += point - sourceOffset + silenceLength;
+    sourceOffset = point;
+  }
+  output.set(samples.subarray(sourceOffset), outputOffset);
+  return output;
+}
+
 /**
  * Parses a mono or stereo 16-bit PCM WAV ArrayBuffer into normalized mono Float32 samples [-1, 1].
  */

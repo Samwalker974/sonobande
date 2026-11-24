@@ -26,6 +26,7 @@ import type {
   ReadyMp3Download,
   TransportState,
 } from '../types/walkman';
+import { DEFAULT_PAUSE_DURATION_SECONDS } from '../utils/audioDsp';
 import { formatPitchLabel, formatTimecode } from '../utils/bookSplitter';
 import { formatByteSizeFr } from '../utils/mp3Encoder';
 import { ExportProgressCard } from './ExportProgressCard';
@@ -44,6 +45,7 @@ interface WalkmanDeckProps {
   vuLevel: number;
   speed: number;
   pitchSemitones: number;
+  pauseDurationSeconds: number;
   volume: number;
   muted: boolean;
   exportProgress: ExportProgress | null;
@@ -63,6 +65,7 @@ interface WalkmanDeckProps {
   onSeekSegment: (seconds: number) => void;
   onSpeedChange: (speed: number) => void;
   onPitchChange: (semitones: number) => void;
+  onPauseDurationChange: (seconds: number) => void;
   onResetTuning: () => void;
   onVolumeChange: (volume: number) => void;
   onToggleMute: () => void;
@@ -134,6 +137,7 @@ export function WalkmanDeck({
   vuLevel,
   speed,
   pitchSemitones,
+  pauseDurationSeconds,
   volume,
   muted,
   exportProgress,
@@ -153,6 +157,7 @@ export function WalkmanDeck({
   onSeekSegment,
   onSpeedChange,
   onPitchChange,
+  onPauseDurationChange,
   onResetTuning,
   onVolumeChange,
   onToggleMute,
@@ -183,7 +188,7 @@ export function WalkmanDeck({
   const statusText = isExporting
     ? 'Export MP3…'
     : isTranslating
-      ? 'Traduction…'
+      ? 'Traduction en cours…'
       : isBuffering
         ? 'Préparation…'
         : isPlaying
@@ -199,7 +204,10 @@ export function WalkmanDeck({
       ? `Chapitre ${activeChapterIndex + 1} (à traduire)`
       : activeChapter?.title ?? '';
 
-  const isTuningModified = Math.abs(speed - 1.0) > 0.01 || Math.abs(pitchSemitones) > 0.05;
+  const isTuningModified =
+    Math.abs(speed - 1.0) > 0.01 ||
+    Math.abs(pitchSemitones) > 0.05 ||
+    Math.abs(pauseDurationSeconds - DEFAULT_PAUSE_DURATION_SECONDS) > 0.01;
   const totalBookSegments = session
     ? session.chapters.reduce((sum, ch) => sum + ch.segments.length, 0)
     : 0;
@@ -522,7 +530,7 @@ export function WalkmanDeck({
         </div>
       </div>
 
-      {/* Tactile Tuning Controls (Vitesse & Hauteur) */}
+      {/* Listening controls: speed, pitch, and pause duration */}
       <div className="mt-5 space-y-4 rounded-xl border border-[#b6b1a6] bg-[#dedbd3] p-4">
         <div className="flex items-center justify-between">
           <h2 className="font-display text-sm font-semibold text-[#1c1e21]">
@@ -632,6 +640,34 @@ export function WalkmanDeck({
             </div>
             <span className="text-[11px] text-[#55585e]">Plus aigu</span>
           </div>
+        </div>
+
+        <hr className="border-[#c6c1b6]" />
+
+        {/* Pause */}
+        <div>
+          <div className="mb-1.5 flex items-center justify-between gap-2">
+            <label htmlFor="pause-duration-slider" className="text-xs font-semibold text-[#2e3136]">
+              Pause après la ponctuation
+            </label>
+            <span className="font-mono text-xs font-semibold tabular-nums text-[#1c1e21]">
+              {pauseDurationSeconds.toFixed(1)} s
+            </span>
+          </div>
+          <input
+            id="pause-duration-slider"
+            type="range"
+            min={0}
+            max={1.5}
+            step={0.1}
+            value={pauseDurationSeconds}
+            onChange={(e) => onPauseDurationChange(Number(e.target.value))}
+            className="walkman-fader w-full"
+          />
+          <p className="mt-1.5 text-[11px] leading-relaxed text-[#55585e]">
+            Silence après les virgules et les signes de fin de phrase (0 désactive). La synthèse
+            peut prendre un peu plus de temps.
+          </p>
         </div>
       </div>
 
