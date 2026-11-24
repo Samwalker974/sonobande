@@ -4,76 +4,15 @@ import fs from 'fs';
 import http from 'http';
 import path from 'path';
 import { fileURLToPath } from 'url';
-import { GoogleGenAI, ThinkingLevel } from '@google/genai';
 import {
   buildParagraphSentencePlan,
   reassembleParagraphs,
 } from './src/utils/translationChunker';
 import { polishFrenchTitle, polishFrenchTranslation } from './src/utils/frenchPolish';
-import { sanitizeTextForSpeech, stripParasiticCharacters } from './src/utils/speechSanitizer';
+import { stripParasiticCharacters } from './src/utils/speechSanitizer';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
-
-function splitFrenchTextIntoChunks(text: string, maxChars = 1400): string[] {
-  const cleaned = text.trim();
-  if (cleaned.length <= maxChars) {
-    return [cleaned];
-  }
-
-  const chunks: string[] = [];
-  const paragraphs = cleaned.split(/\n+/).map((p) => p.trim()).filter(Boolean);
-  let current = '';
-
-  const pushCurrent = () => {
-    if (current.trim()) {
-      chunks.push(current.trim());
-      current = '';
-    }
-  };
-
-  for (const para of paragraphs) {
-    if ((current + ' ' + para).trim().length <= maxChars) {
-      current = current ? `${current}\n${para}` : para;
-      continue;
-    }
-
-    pushCurrent();
-    if (para.length <= maxChars) {
-      current = para;
-      continue;
-    }
-
-    // Split long paragraph by sentence boundaries
-    const sentences = para.match(/[^.!?…]+[.!?…]*/g) ?? [para];
-    for (const rawSentence of sentences) {
-      const sentence = rawSentence.trim();
-      if (!sentence) continue;
-      if ((current + ' ' + sentence).trim().length <= maxChars) {
-        current = current ? `${current} ${sentence}` : sentence;
-      } else {
-        pushCurrent();
-        if (sentence.length <= maxChars) {
-          current = sentence;
-        } else {
-          // Hard split very long unbroken text by words
-          const words = sentence.split(/\s+/);
-          for (const word of words) {
-            if ((current + ' ' + word).trim().length <= maxChars) {
-              current = current ? `${current} ${word}` : word;
-            } else {
-              pushCurrent();
-              current = word;
-            }
-          }
-        }
-      }
-    }
-  }
-
-  pushCurrent();
-  return chunks.length > 0 ? chunks : [cleaned];
-}
 
 function buildWavBuffer(
   pcmData: Buffer,
@@ -100,172 +39,6 @@ function buildWavBuffer(
   header.writeUInt32LE(pcmData.length, 40);
 
   return Buffer.concat([header, pcmData]);
-}
-
-const TRANSLATE_SYSTEM_INSTRUCTION =
-  "Tu es un traducteur littéraire francophone chevronné (anglais → français). Reformule fidèlement chaque idée dans un français idiomatique, élégant, naturel et fluide à l'oral. Évite absolument le mot-à-mot et les calques syntaxiques de l'anglais : privilégie des tournures authentiquement françaises, respecte les temps narratifs (imparfait pour les descriptions et ambiances), utilise des guillemets français (« ») pour les dialogues et conserve exactement la structure en paragraphes. Ne résume jamais, n'omets aucune phrase et n'ajoute aucun commentaire. Renvoie uniquement la traduction française.";
-
-const TRANSLATE_WITH_TITLE_SYSTEM_INSTRUCTION =
-  "Tu es un traducteur littéraire francophone chevronné (anglais → français). On te fournit un titre de chapitre puis le texte du chapitre. Traduis le titre et le texte dans un français idiomatique, élégant et naturel à lire à voix haute, en évitant les calques de l'anglais et en respectant les temps narratifs français ainsi que les sauts de paragraphes. Réponds strictement au format :\nTITRE: <titre traduit en français naturel sur une seule ligne>\nTEXTE:\n<texte intégral traduit en français idiomatique>\nN'ajoute aucun commentaire ni explication.";
-
-function splitTextForTranslation(text: string, maxChars = 12000): string[] {
-  const cleaned = text.replace(/\r\n/g, '\n').trim();
-  if (cleaned.length <= maxChars) return [cleaned];
-
-  const paragraphs = cleaned.split(/\n{2,}/).map((p) => p.trim()).filter(Boolean);
-  const chunks: string[] = [];
-  let current = '';
-
-  const pushCurrent = () => {
-    if (current.trim()) {
-      chunks.push(current.trim());
-      current = '';
-    }
-  };
-
-  for (const para of paragraphs) {
-    if (!current && para.length <= maxChars) {
-      current = para;
-      continue;
-    }
-    if (current && current.length + 2 + para.length <= maxChars) {
-      current = `${current}\n\n${para}`;
-      continue;
-    }
-
-    pushCurrent();
-    if (para.length <= maxChars) {
-      current = para;
-      continue;
-    }
-
-    const subChunks = splitFrenchTextIntoChunks(para, maxChars);
-    chunks.push(...subChunks);
-  }
-
-  pushCurrent();
-  return chunks.length > 0 ? chunks : [cleaned];
-}
-
-function parseTitleAndTextResponse(
-  rawResponse: string,
-  fallbackTitle: string
-): { translatedTitle: string; translatedText: string } {
-  const match = rawResponse.match(/^\s*TITRE\s*:\s*([^\n]+)\n+\s*TEXTE\s*:\s*\n?([\s\S]+)$/i);
-  if (match) {
-    const cleanTitle = match[1].replace(/^["«»]+|["«»]+$/g, '').trim();
-    const cleanText = match[2].trim();
-    if (cleanText) {
-      return {
-        translatedTitle: cleanTitle || fallbackTitle,
-        translatedText: cleanText,
-      };
-    }
-  }
-  return {
-    translatedTitle: fallbackTitle,
-    translatedText: rawResponse.trim(),
-  };
-}
-
-// Track models that hit a daily Free Tier quota so we don't keep hammering them
-const modelDailyQuotaCooldownUntil = new Map<string, number>();
-
-function isDailyQuotaExhaustedMessage(errMsg: string): boolean {
-  return (
-    errMsg.includes('GenerateRequestsPerDay') ||
-    errMsg.includes('requests per day') ||
-    errMsg.includes('free_tier_requests')
-  );
-}
-
-function isQuotaErrorMessage(errMsg: string): boolean {
-  return errMsg.includes('RESOURCE_EXHAUSTED') || errMsg.includes('429');
-}
-
-async function generateTranslationWithRetry(
-  ai: GoogleGenAI,
-  text: string,
-  systemInstruction: string
-): Promise<string> {
-  // Prefer gemini-3.1-flash-lite first (high-throughput, much larger Free Tier quota)
-  // and fall back to gemini-4-hydrogen if needed.
-  const candidates: Array<{ model: string; useThinking: boolean }> = [
-    { model: 'gemini-3.1-flash-lite', useThinking: false },
-    { model: 'gemini-4-hydrogen', useThinking: true },
-  ];
-
-  const now = Date.now();
-  const activeCandidates = candidates.filter((c) => {
-    const until = modelDailyQuotaCooldownUntil.get(c.model) ?? 0;
-    return now >= until;
-  });
-
-  // If all models are currently in cooldown, still try primary once in case quota reset or key changed
-  const ordered = activeCandidates.length > 0 ? activeCandidates : [candidates[0]];
-
-  let lastError: unknown;
-
-  for (let i = 0; i < ordered.length; i++) {
-    const { model, useThinking } = ordered[i];
-    const maxAttemptsPerModel = 2;
-
-    for (let attempt = 0; attempt < maxAttemptsPerModel; attempt++) {
-      try {
-        const response = await ai.models.generateContent({
-          model,
-          contents: text,
-          config: useThinking
-            ? {
-                systemInstruction,
-                thinkingConfig: {
-                  thinkingLevel: ThinkingLevel.LOW,
-                },
-              }
-            : {
-                systemInstruction,
-              },
-        });
-
-        const translated = response.text?.trim();
-        if (!translated) {
-          throw new Error("Le service de traduction n'a renvoyé aucun texte.");
-        }
-
-        return translated;
-      } catch (error) {
-        lastError = error;
-        const errMsg = error instanceof Error ? error.message : String(error);
-
-        if (isQuotaErrorMessage(errMsg)) {
-          if (isDailyQuotaExhaustedMessage(errMsg)) {
-            // Put this model on a 10-minute cooldown so we route directly to the fallback model
-            modelDailyQuotaCooldownUntil.set(model, Date.now() + 10 * 60 * 1000);
-          }
-          // Do not retry the same quota-exhausted model; move immediately to next candidate
-          break;
-        }
-
-        const isTransient =
-          errMsg.includes('503') ||
-          errMsg.includes('500') ||
-          errMsg.includes('UNAVAILABLE') ||
-          errMsg.includes('high demand') ||
-          errMsg.includes('timeout');
-
-        if (!isTransient) {
-          // Move to fallback model if available (e.g. 404 or model-specific issue)
-          break;
-        }
-
-        if (attempt < maxAttemptsPerModel - 1) {
-          await new Promise((resolve) => setTimeout(resolve, 900));
-        }
-      }
-    }
-  }
-
-  throw lastError;
 }
 
 type LocalTranslationResult =
@@ -350,7 +123,6 @@ async function createServer() {
     try {
       const rawText = typeof req.body?.text === 'string' ? req.body.text.trim() : '';
       const rawTitle = typeof req.body?.title === 'string' ? req.body.title.trim() : '';
-      const requestedEngine = req.body?.engine === 'gemini' ? 'gemini' : 'local';
 
       if (!rawText) {
         res.status(400).json({
@@ -366,113 +138,16 @@ async function createServer() {
         return;
       }
 
-      // Fast, unlimited, zero-quota local neural EN -> FR translation (Opus-MT)
-      if (requestedEngine !== 'gemini') {
-        try {
-          const localResult = await translateWithLocalOpusMt(rawTitle, rawText);
-          res.json({
-            translatedTitle: localResult.translatedTitle,
-            translatedText: localResult.translatedText,
-            engineUsed: 'local-neural',
-          });
-          return;
-        } catch (localErr) {
-          console.warn(
-            'Avertissement /api/translate: bascule sur Gemini suite à une erreur locale:',
-            localErr instanceof Error ? localErr.message : String(localErr)
-          );
-        }
-      }
-
-      const apiKey = process.env.GEMINI_API_KEY;
-      if (!apiKey) {
-        res.status(500).json({
-          error:
-            "La clé API Gemini n'est pas configurée côté serveur. Vérifiez les paramètres dans Settings > Secrets.",
-        });
-        return;
-      }
-
-      const ai = new GoogleGenAI({
-        apiKey,
-        httpOptions: {
-          headers: {
-            'User-Agent': 'aistudio-build',
-          },
-        },
-      });
-
-      const cleanSourceTitle = stripParasiticCharacters(rawTitle);
-      const cleanSourceText = stripParasiticCharacters(rawText);
-      const chunks = splitTextForTranslation(cleanSourceText || rawText, 12000);
-      const translatedChunks: string[] = [];
-      let translatedTitle = cleanSourceTitle || rawTitle;
-
-      if (translatedTitle) {
-        const combinedInput = `TITRE: ${translatedTitle}\n\nTEXTE:\n${chunks[0]}`;
-        const rawFirst = await generateTranslationWithRetry(
-          ai,
-          combinedInput,
-          TRANSLATE_WITH_TITLE_SYSTEM_INSTRUCTION
-        );
-        const parsed = parseTitleAndTextResponse(rawFirst, translatedTitle);
-        translatedTitle = parsed.translatedTitle;
-        translatedChunks.push(parsed.translatedText);
-      } else {
-        const firstTranslated = await generateTranslationWithRetry(
-          ai,
-          chunks[0],
-          TRANSLATE_SYSTEM_INSTRUCTION
-        );
-        translatedChunks.push(firstTranslated);
-      }
-
-      for (let i = 1; i < chunks.length; i++) {
-        const nextTranslated = await generateTranslationWithRetry(
-          ai,
-          chunks[i],
-          TRANSLATE_SYSTEM_INSTRUCTION
-        );
-        translatedChunks.push(nextTranslated);
-      }
-
+      const localResult = await translateWithLocalOpusMt(rawTitle, rawText);
       res.json({
-        translatedTitle: polishFrenchTitle(translatedTitle),
-        translatedText: polishFrenchTranslation(translatedChunks.join('\n\n')),
-        engineUsed: 'gemini',
+        translatedTitle: localResult.translatedTitle,
+        translatedText: localResult.translatedText,
+        engineUsed: 'local-neural',
       });
     } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      if (message.includes('API_KEY_INVALID') || message.includes('PERMISSION_DENIED')) {
-        console.warn('Avertissement /api/translate: clé API refusée.');
-        res.status(403).json({
-          error:
-            "Clé API Gemini refusée. Vérifiez la clé configurée dans Settings > Secrets.",
-        });
-        return;
-      }
-      if (isQuotaErrorMessage(message)) {
-        console.warn('Avertissement /api/translate: quota Gemini atteint (429).');
-        const isDaily = isDailyQuotaExhaustedMessage(message);
-        res.status(429).json({
-          quotaExceeded: true,
-          error: isDaily
-            ? 'Quota journalier gratuit Gemini atteint pour la traduction. Patientez jusqu’au renouvellement ou sélectionnez une clé API facturée dans Settings > Secrets pour augmenter votre limite.'
-            : 'Quota de traduction Gemini atteint temporairement. Patientez quelques instants avant de réessayer.',
-        });
-        return;
-      }
-      if (message.includes('503') || message.includes('UNAVAILABLE')) {
-        console.warn('Avertissement /api/translate: service momentanément indisponible (503).');
-        res.status(503).json({
-          error:
-            'Le service de traduction est momentanément très sollicité. Patientez quelques secondes puis réessayez.',
-        });
-        return;
-      }
-      console.error('Erreur /api/translate:', error);
-      res.status(502).json({
-        error: 'Impossible de traduire ce chapitre pour le moment. Réessayez dans un instant.',
+      console.error('Erreur du moteur de traduction local:', error);
+      res.status(503).json({
+        error: 'Le moteur de traduction local est indisponible. Aucun service externe ne sera appelé.',
       });
     }
   });

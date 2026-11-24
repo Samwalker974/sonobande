@@ -9,7 +9,7 @@ import { stripParasiticCharacters } from './speechSanitizer';
 
 const FRENCH_WORDS_PER_MINUTE = 148;
 const DEFAULT_CHAPTER_MAX_CHARS = 12000;
-const GEMINI_SEGMENT_MAX_CHARS = 1200;
+const DEFAULT_SEGMENT_MAX_CHARS = 1200;
 const LOCAL_SPEECH_MAX_CHARS = 220;
 
 const CHAPTER_HEADING_REGEX =
@@ -88,7 +88,7 @@ export function sanitizeMp3Filename(title: string): string {
  */
 export function splitTextIntoSegments(
   text: string,
-  maxChars = GEMINI_SEGMENT_MAX_CHARS
+  maxChars = DEFAULT_SEGMENT_MAX_CHARS
 ): string[] {
   const cleaned = text.replace(/\r\n/g, '\n').trim();
   if (!cleaned) return [];
@@ -312,7 +312,7 @@ export function buildChapterItems(
   }
 
   return expanded.map((ch, index) => {
-    const segments = splitTextIntoSegments(ch.text, GEMINI_SEGMENT_MAX_CHARS);
+    const segments = splitTextIntoSegments(ch.text, DEFAULT_SEGMENT_MAX_CHARS);
     return {
       id: `ch-${index + 1}`,
       index,
@@ -338,7 +338,7 @@ export function applyChapterTranslation(
 ): ChapterItem {
   const cleanTitle = stripParasiticCharacters(translatedTitle) || chapter.title;
   const cleanText = stripParasiticCharacters(translatedText) || chapter.text;
-  const segments = splitTextIntoSegments(cleanText, GEMINI_SEGMENT_MAX_CHARS);
+  const segments = splitTextIntoSegments(cleanText, DEFAULT_SEGMENT_MAX_CHARS);
   return {
     ...chapter,
     title: cleanTitle,

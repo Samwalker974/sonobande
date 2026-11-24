@@ -86,9 +86,9 @@ test('splitTextIntoSegments and splitForLocalSpeech respect character bounds', (
     (_, i) => `Phrase numéro ${i + 1} avec suffisamment de mots français pour tester le découpage propre.`
   ).join(' ');
 
-  const geminiSegs = splitTextIntoSegments(text, 1200);
-  assert.ok(geminiSegs.length >= 2);
-  for (const seg of geminiSegs) {
+  const segments = splitTextIntoSegments(text, 1200);
+  assert.ok(segments.length >= 2);
+  for (const seg of segments) {
     assert.ok(seg.length <= 1200);
   }
 
