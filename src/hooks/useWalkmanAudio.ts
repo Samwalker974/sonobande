@@ -1,5 +1,4 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { predict } from '@diffusionstudio/vits-web';
 import type {
   BookSession,
   ChapterItem,
@@ -12,6 +11,7 @@ import {
   parseWavBuffer,
   processAudioSpeedPitch,
 } from '../utils/audioDsp';
+import { synthesizeInBrowser } from '../utils/browserVoice';
 import { splitTextAtPausePunctuation } from '../utils/bookSplitter';
 
 export interface CachedSegmentAudio {
@@ -288,7 +288,7 @@ export function useWalkmanAudio({
         const phraseAudio: Array<{ samples: Float32Array; sampleRate: number }> = [];
         for (const phrase of phrases) {
           if (signal?.aborted) throw new DOMException('Synthèse annulée', 'AbortError');
-          const wavBlob = await predict({ text: phrase.text, voiceId: nVoice });
+          const wavBlob = await synthesizeInBrowser(phrase.text, nVoice, signal);
           const wav = parseWavBuffer(await wavBlob.arrayBuffer());
           phraseAudio.push({ samples: wav.samples, sampleRate: wav.sampleRate });
         }
