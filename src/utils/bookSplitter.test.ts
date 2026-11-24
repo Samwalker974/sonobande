@@ -10,6 +10,7 @@ import {
   sanitizeMp3Filename,
   splitForLocalSpeech,
   splitTextAtPausePunctuation,
+  splitTextForVoiceSynthesis,
   splitTextIntoSegments,
 } from './bookSplitter';
 
@@ -110,6 +111,18 @@ test('splitTextAtPausePunctuation preserves commas and sentence-ending punctuati
     ]
   );
   assert.deepEqual(splitTextAtPausePunctuation('Il mesure 3.14 mètres.'), [
+    { text: 'Il mesure 3.14 mètres.', pauseAfter: true },
+  ]);
+});
+
+test('splitTextForVoiceSynthesis uses one call by default and sentence chunks when pauses are enabled', () => {
+  const sample = 'Bonjour, monsieur, comment allez-vous ? Très bien ! Il mesure 3.14 mètres.';
+  assert.deepEqual(splitTextForVoiceSynthesis(sample, false), [
+    { text: sample, pauseAfter: false },
+  ]);
+  assert.deepEqual(splitTextForVoiceSynthesis(sample, true), [
+    { text: 'Bonjour, monsieur, comment allez-vous ?', pauseAfter: true },
+    { text: 'Très bien !', pauseAfter: true },
     { text: 'Il mesure 3.14 mètres.', pauseAfter: true },
   ]);
 });

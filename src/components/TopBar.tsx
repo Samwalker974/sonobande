@@ -99,10 +99,10 @@ export function TopBar({
           </a>
         </div>
 
-        {/* Zone 2: Concise single-line navigation links */}
+        {/* Zone 2: Concise single-line navigation links matching page order */}
         <nav
           aria-label="Navigation principale"
-          className="hidden md:flex items-center gap-7 text-sm font-medium text-[#4a4d52]"
+          className="hidden md:flex items-center gap-6 text-sm font-medium text-[#4a4d52]"
         >
           <a
             href="#lecteur"
@@ -111,10 +111,10 @@ export function TopBar({
             Lecteur
           </a>
           <a
-            href="#bibliotheque"
+            href="#document"
             className="whitespace-nowrap shrink-0 transition-colors hover:text-[#1c1e21] hover:underline underline-offset-4 focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-[#d9531e]"
           >
-            Bibliothèque
+            Importer
           </a>
           <a
             href="#liseuse"
@@ -127,6 +127,12 @@ export function TopBar({
             className="whitespace-nowrap shrink-0 transition-colors hover:text-[#1c1e21] hover:underline underline-offset-4 focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-[#d9531e]"
           >
             Chapitres
+          </a>
+          <a
+            href="#bibliotheque"
+            className="whitespace-nowrap shrink-0 transition-colors hover:text-[#1c1e21] hover:underline underline-offset-4 focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-[#d9531e]"
+          >
+            Bibliothèque
           </a>
         </nav>
 
@@ -333,11 +339,11 @@ export function TopBar({
           </div>
           <nav aria-label="Navigation mobile" className="flex flex-col gap-1">
             {[
-              ['#lecteur', 'Lecteur Walkman'],
-              ['#document', 'Importer un texte'],
-              ['#bibliotheque', 'Bibliothèque'],
-              ['#liseuse', 'Liseuse'],
-              ['#chapitres', 'Chapitres & marque-pages'],
+              ['#lecteur', '1. Lecteur Walkman'],
+              ['#document', '2. Importer un livre ou texte'],
+              ['#liseuse', '3. Liseuse synchronisée'],
+              ['#chapitres', '4. Chapitres & marque-pages'],
+              ['#bibliotheque', '5. Ma Bibliothèque'],
             ].map(([href, label]) => (
               <a
                 key={href}

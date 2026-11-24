@@ -1,4 +1,4 @@
-import { Check, Download, FileUp, Languages, Loader2, X } from 'lucide-react';
+import { Check, Download, FileUp, Languages, Loader2, Volume2, X } from 'lucide-react';
 import type { GlobalTaskProgress } from '../types/walkman';
 
 interface GlobalProgressBarProps {
@@ -29,7 +29,9 @@ export function GlobalProgressBar({
       ? Download
       : task.kind === 'translation'
         ? Languages
-        : FileUp;
+        : task.kind === 'playback'
+          ? Volume2
+          : FileUp;
 
   return (
     <div
@@ -155,7 +157,7 @@ export function GlobalProgressBar({
                 style={{ width: `${Math.max(4, computedPercent)}%` }}
               />
             ) : (
-              <div className="h-full w-2/5 rounded-full bg-[#d9531e] opacity-85" />
+              <div className="h-full w-2/5 animate-pulse rounded-full bg-[#d9531e]" />
             )}
           </div>
           {computedPercent !== null && (

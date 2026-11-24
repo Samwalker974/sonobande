@@ -1431,9 +1431,28 @@ export default function App() {
       };
     }
 
+    if (audio.bufferingProgress) {
+      const bp = audio.bufferingProgress;
+      const showCounts = bp.total > 1;
+      return {
+        task: {
+          kind: 'playback',
+          headline: bp.headline,
+          detail: bp.detail,
+          completed: showCounts ? bp.completed : undefined,
+          total: showCounts ? bp.total : undefined,
+          percent: showCounts ? Math.round((bp.completed / bp.total) * 100) : null,
+          cancelLabel: 'Annuler',
+        },
+        onCancel: audio.stop,
+      };
+    }
+
     return null;
   }, [
     abortAllTranslations,
+    audio.bufferingProgress,
+    audio.stop,
     browserTranslationStatus,
     exportProgress,
     importProgress,
@@ -1654,9 +1673,14 @@ export default function App() {
             onEnterFullscreen={() => setIsFullscreenListening(true)}
           />
 
-          <main className="mx-auto max-w-[1280px] space-y-6 px-4 pt-5 pb-28 sm:px-6 sm:pt-7 md:space-y-8 md:px-8 md:pt-9 md:pb-9 md:pr-20">
-            <div className="grid grid-cols-1 items-stretch gap-5 sm:gap-7 lg:grid-cols-12">
-              <div className="order-2 min-w-0 lg:order-1 lg:col-span-6 xl:col-span-5">
+          <main className="mx-auto max-w-[1280px] space-y-6 px-4 pt-5 pb-28 sm:px-6 sm:pt-7 md:space-y-8 md:px-8 md:pt-8 md:pb-10 md:pr-20">
+            {/* 1. Poste principal : Walkman + Import/Collage (sur mobile : Lecteur d'abord si un livre est chargé, sinon Import d'abord) */}
+            <div className="grid grid-cols-1 items-start gap-5 sm:gap-7 lg:grid-cols-12">
+              <div
+                className={`min-w-0 lg:order-1 lg:col-span-6 xl:col-span-5 ${
+                  session ? 'order-1' : 'order-2'
+                }`}
+              >
                 <WalkmanDeck
                   session={session}
                   activeChapter={activeChapter}
@@ -1675,6 +1699,7 @@ export default function App() {
                   volume={volume}
                   muted={muted}
                   isExporting={Boolean(exportProgress)}
+                  playbackErrorMessage={errorMessage}
                   exportSuccessMessage={exportSuccessMessage}
                   exportErrorMessage={exportErrorMessage}
                   readyMp3={readyMp3}
@@ -1710,7 +1735,11 @@ export default function App() {
                 />
               </div>
 
-              <div className="order-1 min-w-0 lg:order-2 lg:col-span-6 xl:col-span-7">
+              <div
+                className={`min-w-0 lg:order-2 lg:col-span-6 xl:col-span-7 ${
+                  session ? 'order-2' : 'order-1'
+                }`}
+              >
                 <TextStudio
                   session={session}
                   neuralVoiceId={neuralVoiceId}
@@ -1741,15 +1770,7 @@ export default function App() {
               </div>
             </div>
 
-            {/* Browser Text-Only Book Library with Auto Stop-Position Resume */}
-            <BookLibrary
-              books={savedBooks}
-              activeBookId={session?.id ?? null}
-              onResumeBook={handleResumeBook}
-              onDeleteBook={(id) => void handleDeleteSavedBook(id)}
-            />
-
-            {/* Synchronized French-only Chapter Reader */}
+            {/* 2. Liseuse française synchronisée directement sous le Walkman */}
             <ChapterReader
               session={session}
               activeChapter={activeChapter}
@@ -1765,7 +1786,7 @@ export default function App() {
               onNextChapter={() => handleSelectChapter(activeChapterIndex + 1, false)}
             />
 
-            {/* Chapters & Bookmarks Tabs (including auto-saved stop position) */}
+            {/* 3. Chapitres & Marque-pages du livre actif */}
             <ChapterList
               session={session}
               activeChapterIndex={activeChapterIndex}
@@ -1785,6 +1806,14 @@ export default function App() {
               onJumpToBookmark={handleJumpToBookmark}
               onUpdateBookmarkNote={handleUpdateBookmarkNote}
               onDeleteBookmark={handleDeleteBookmark}
+            />
+
+            {/* 4. Ma Bibliothèque locale pour changer de livre */}
+            <BookLibrary
+              books={savedBooks}
+              activeBookId={session?.id ?? null}
+              onResumeBook={handleResumeBook}
+              onDeleteBook={(id) => void handleDeleteSavedBook(id)}
             />
           </main>
 

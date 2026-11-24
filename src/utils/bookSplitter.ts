@@ -202,6 +202,52 @@ export function splitTextAtPausePunctuation(
 }
 
 /**
+ * Splits a segment into sentence-level chunks only when explicit extra pauses are requested.
+ * When extra pauses are disabled (0 s), returns a single chunk so Piper synthesizes the
+ * entire segment in one ONNX call instead of reloading the model at every comma.
+ */
+export function splitTextForVoiceSynthesis(
+  text: string,
+  enableExtraPauses: boolean
+): Array<{ text: string; pauseAfter: boolean }> {
+  const trimmed = text.trim();
+  if (!trimmed) return [];
+  if (!enableExtraPauses) {
+    return [{ text: trimmed, pauseAfter: false }];
+  }
+
+  const phrases: Array<{ text: string; pauseAfter: boolean }> = [];
+  let start = 0;
+
+  for (let index = 0; index < trimmed.length; index++) {
+    const ch = trimmed[index];
+    if (!ch || !/[.!?…]/u.test(ch)) continue;
+    if (
+      ch === '.' &&
+      /\d/u.test(trimmed[index - 1] ?? '') &&
+      /\d/u.test(trimmed[index + 1] ?? '')
+    ) {
+      continue;
+    }
+
+    let end = index + 1;
+    while (end < trimmed.length && /[.!?…»”"')\]]/u.test(trimmed[end] ?? '')) end++;
+
+    const sentence = trimmed.slice(start, end).trim();
+    if (sentence) phrases.push({ text: sentence, pauseAfter: true });
+    start = end;
+    index = end - 1;
+  }
+
+  const remainder = trimmed.slice(start).trim();
+  if (remainder) phrases.push({ text: remainder, pauseAfter: false });
+  if (phrases.length === 0) {
+    return [{ text: trimmed, pauseAfter: false }];
+  }
+  return phrases;
+}
+
+/**
  * Splits a raw chapter (potentially very long) into sub-chapters if it exceeds maxChapterChars.
  */
 function splitOversizedChapter(

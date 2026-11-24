@@ -6,6 +6,7 @@ import {
   EyeOff,
   FastForward,
   Languages,
+  Loader2,
   Minimize2,
   Pause,
   Play,
@@ -252,16 +253,20 @@ export function FullscreenListeningView({
               data-testid="fullscreen-chapter-status"
               className="retro-lcd-window inline-flex flex-wrap items-center justify-center gap-x-2 gap-y-1 rounded-lg px-3.5 py-1.5 font-mono text-xs font-medium tabular-nums text-[#e8c68d]"
             >
-              <span
-                className={`inline-block h-2 w-2 rounded-full ${
-                  isPlaying || isBuffering
-                    ? 'bg-[#d9531e]'
-                    : isPaused
-                      ? 'bg-[#d9b87c]'
-                      : 'bg-[#6c717c]'
-                }`}
-                aria-hidden="true"
-              />
+              {isBuffering ? (
+                <Loader2 className="h-3.5 w-3.5 animate-spin text-[#f07645]" aria-hidden="true" />
+              ) : (
+                <span
+                  className={`inline-block h-2 w-2 rounded-full ${
+                    isPlaying
+                      ? 'bg-[#d9531e]'
+                      : isPaused
+                        ? 'bg-[#d9b87c]'
+                        : 'bg-[#6c717c]'
+                  }`}
+                  aria-hidden="true"
+                />
+              )}
               <span>
                 {hasBook
                   ? `Chapitre ${activeChapterIndex + 1} / ${totalChapters} · Segment ${activeSegmentIndex + 1} / ${Math.max(1, totalSegmentsInChapter)} · ${statusText}`

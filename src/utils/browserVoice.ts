@@ -18,7 +18,7 @@ interface PendingSynthesis {
 // @diffusionstudio/vits-web creates a new ONNX InferenceSession on every predict()
 // call without releasing it. Recycling the worker periodically frees WASM heap cleanly
 // during long MP3 exports.
-const MAX_SYNTHESES_PER_WORKER = 8;
+const MAX_SYNTHESES_PER_WORKER = 16;
 
 let voiceWorker: Worker | null = null;
 let workerSynthesesCount = 0;

@@ -3,9 +3,11 @@ import {
   Bookmark,
   BookmarkCheck,
   CheckCircle2,
+  ChevronDown,
   Disc3,
   Download,
   FastForward,
+  Loader2,
   Maximize2,
   Pause,
   Play,
@@ -13,11 +15,13 @@ import {
   RotateCcw,
   SkipBack,
   SkipForward,
+  SlidersHorizontal,
   Square,
   Volume2,
   VolumeX,
   X,
 } from 'lucide-react';
+import { useState } from 'react';
 import { getNeuralVoiceById } from '../constants/voices';
 import type {
   BookSession,
@@ -48,6 +52,7 @@ interface WalkmanDeckProps {
   volume: number;
   muted: boolean;
   isExporting: boolean;
+  playbackErrorMessage?: string | null;
   exportSuccessMessage: string | null;
   exportErrorMessage: string | null;
   readyMp3: ReadyMp3Download | null;
@@ -140,6 +145,7 @@ export function WalkmanDeck({
   volume,
   muted,
   isExporting,
+  playbackErrorMessage,
   exportSuccessMessage,
   exportErrorMessage,
   readyMp3,
@@ -166,12 +172,14 @@ export function WalkmanDeck({
   onExportBookMp3,
   onDismissReadyMp3,
 }: WalkmanDeckProps) {
+  const [showTuning, setShowTuning] = useState(false);
   const isPlaying = transportState === 'playing';
   const isPaused = transportState === 'paused';
   const isBuffering = transportState === 'buffering';
   const hasBook = Boolean(session && activeChapter);
   const canExport = hasBook || hasDraftText;
   const totalChapters = session?.chapters.length ?? 0;
+  const effectiveDuration = Math.max(segmentDuration, segmentCurrentTime);
 
   const leftTapeRadius = Math.round(92 - chapterProgressRatio * 30);
   const rightTapeRadius = Math.round(62 + chapterProgressRatio * 30);
@@ -194,7 +202,9 @@ export function WalkmanDeck({
           : isPaused
             ? 'Pause'
             : hasBook
-              ? 'Prêt'
+              ? segmentCurrentTime > 0
+                ? 'Reprise prête'
+                : 'Prêt'
               : 'Aucune bande';
 
   const cassetteChapterLabel =
@@ -260,7 +270,8 @@ export function WalkmanDeck({
             type="button"
             onClick={onStop}
             disabled={!hasBook}
-            aria-label="Arrêter et revenir au début du chapitre"
+            aria-label="Arrêter la lecture en conservant la position"
+            title="Arrêter (conserve la position)"
             className="mech-key flex min-h-[54px] flex-col items-center justify-center gap-1 rounded-lg px-2 py-2 text-xs font-semibold text-[#1f2125] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#d9531e] disabled:opacity-45"
           >
             <Square className="h-3.5 w-3.5 fill-current" aria-hidden="true" />
@@ -316,12 +327,14 @@ export function WalkmanDeck({
           </span>
         </div>
         <div className="flex items-center gap-2 text-xs font-medium text-[#3b3e44]">
-          {(isPlaying || isBuffering || isExporting) && (
+          {isBuffering ? (
+            <Loader2 className="h-3.5 w-3.5 animate-spin text-[#d9531e]" aria-hidden="true" />
+          ) : (isPlaying || isExporting) ? (
             <span
               className="inline-block h-2 w-2 rounded-full bg-[#d9531e]"
               aria-hidden="true"
             />
-          )}
+          ) : null}
           <span data-testid="walkman-status" className="font-mono">
             {statusText}
           </span>
@@ -379,24 +392,25 @@ export function WalkmanDeck({
             <div className="px-3 py-2.5">
               {session && activeChapter ? (
                 <>
+                  <p className="truncate font-display text-sm font-bold text-[#1c1e21] sm:text-base">
+                    {session.title}
+                  </p>
                   <p
                     data-testid="active-cassette-title"
-                    className="truncate font-display text-sm font-semibold text-[#1c1e21] sm:text-base"
+                    className="mt-0.5 truncate text-xs font-semibold text-[#3a3d42]"
                   >
                     {cassetteChapterLabel}
                   </p>
-                  <p className="mt-0.5 flex flex-wrap items-center gap-x-2 text-xs text-[#55585e]">
-                    <span className="truncate max-w-[160px]">{session.title}</span>
+                  <p className="mt-0.5 flex flex-wrap items-center gap-x-2 text-[11px] text-[#5c5f66]">
+                    <span>{`Voix ${neuralVoiceProfile.name}`}</span>
                     <span aria-hidden="true">·</span>
-                    <span>
-                      {`${neuralVoiceProfile.name} (${neuralVoiceProfile.timbre})`}
-                    </span>
+                    <span>{statusText}</span>
                   </p>
                 </>
               ) : (
                 <div className="flex items-center gap-2 py-1 text-xs text-[#55585e]">
                   <Disc3 className="h-4 w-4 shrink-0" aria-hidden="true" />
-                  <span>Importez un livre PDF/EPUB ou collez un texte à droite pour commencer.</span>
+                  <span>Importez un livre PDF/EPUB ou collez un texte pour commencer.</span>
                 </div>
               )}
             </div>
@@ -508,7 +522,7 @@ export function WalkmanDeck({
 
           <div className="flex flex-col justify-center rounded-lg border border-[#3a3d43] bg-[#111316] px-3.5 py-2">
             <span className="text-[10px] font-medium tracking-wide text-[#9fa3ab]">
-              Segment en cours
+              Position du segment
             </span>
             <div
               data-testid="walkman-counter"
@@ -516,7 +530,7 @@ export function WalkmanDeck({
             >
               <span>{formatTimecode(segmentCurrentTime)}</span>
               <span className="mx-1.5 text-[#6e727a]">/</span>
-              <span className="text-[#a5a9b1]">{formatTimecode(segmentDuration)}</span>
+              <span className="text-[#a5a9b1]">{formatTimecode(effectiveDuration)}</span>
             </div>
           </div>
         </div>
@@ -530,155 +544,181 @@ export function WalkmanDeck({
             id="tape-scrubber"
             type="range"
             min={0}
-            max={Math.max(0.1, segmentDuration)}
+            max={Math.max(0.1, effectiveDuration)}
             step={0.1}
-            value={Math.min(segmentCurrentTime, segmentDuration || 0)}
-            disabled={!hasBook || segmentDuration <= 0}
+            value={Math.min(segmentCurrentTime, effectiveDuration || 0)}
+            disabled={!hasBook || effectiveDuration <= 0}
             onChange={(e) => onSeekSegment(Number(e.target.value))}
             className="walkman-fader w-full disabled:opacity-40"
           />
         </div>
       </div>
 
-      {/* Listening controls: speed, pitch, and pause duration */}
-      <div className="mt-5 space-y-4 rounded-xl border border-[#b6b1a6] bg-[#dedbd3] p-4">
-        <div className="flex items-center justify-between">
-          <h2 className="font-display text-sm font-semibold text-[#1c1e21]">
-            Réglages d&apos;écoute
-          </h2>
+      {/* Collapsible Listening Controls: compact summary bar + full sliders on demand */}
+      <div className="mt-4 rounded-xl border border-[#b6b1a6] bg-[#dedbd3]">
+        <div className="flex items-center justify-between gap-2 px-3.5 py-2.5">
+          <button
+            type="button"
+            onClick={() => setShowTuning((prev) => !prev)}
+            aria-expanded={showTuning}
+            className="flex min-w-0 flex-1 items-center justify-between gap-2 text-left focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#d9531e]"
+          >
+            <span className="flex items-center gap-2">
+              <SlidersHorizontal className="h-3.5 w-3.5 shrink-0 text-[#b93e0e]" aria-hidden="true" />
+              <span className="font-display text-xs font-semibold text-[#1c1e21] sm:text-sm">
+                Réglages d&apos;écoute
+              </span>
+            </span>
+            <span className="flex items-center gap-2">
+              <span className="font-mono text-[11px] font-medium tabular-nums text-[#4a4d52]">
+                {speed.toFixed(2)}× · {formatPitchLabel(pitchSemitones)} · {pauseDurationSeconds.toFixed(1)} s
+              </span>
+              <ChevronDown
+                className={`h-4 w-4 shrink-0 text-[#4a4d52] transition-transform ${
+                  showTuning ? 'rotate-180' : ''
+                }`}
+                aria-hidden="true"
+              />
+            </span>
+          </button>
+
           {isTuningModified && (
             <button
               type="button"
               onClick={onResetTuning}
-              className="inline-flex items-center gap-1.5 text-xs font-medium text-[#b93e0e] transition-colors hover:text-[#8f2e08] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#d9531e]"
+              title="Réinitialiser les réglages d'écoute"
+              className="inline-flex shrink-0 items-center gap-1 rounded-md px-1.5 py-1 text-xs font-medium text-[#b93e0e] transition-colors hover:bg-[#d2cec5] hover:text-[#8f2e08] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#d9531e]"
             >
               <RotateCcw className="h-3.5 w-3.5" aria-hidden="true" />
-              <span>Réinitialiser</span>
+              <span className="sr-only sm:not-sr-only">Reset</span>
             </button>
           )}
         </div>
 
-        {/* Speed */}
-        <div>
-          <div className="mb-1.5 flex items-center justify-between gap-2">
-            <label htmlFor="speed-slider" className="text-xs font-semibold text-[#2e3136]">
-              Vitesse de lecture
-            </label>
-            <span
-              data-testid="speed-value"
-              className="font-mono text-xs font-semibold tabular-nums text-[#1c1e21]"
-            >
-              {speed.toFixed(2)}×
-            </span>
-          </div>
-          <input
-            id="speed-slider"
-            type="range"
-            min={0.5}
-            max={2.0}
-            step={0.05}
-            value={speed}
-            onChange={(e) => onSpeedChange(Number(e.target.value))}
-            className="walkman-fader w-full"
-          />
-          <div className="mt-2 flex flex-wrap items-center gap-1.5">
-            {SPEED_PRESETS.map((preset) => {
-              const active = Math.abs(speed - preset) < 0.01;
-              return (
-                <button
-                  key={preset}
-                  type="button"
-                  onClick={() => onSpeedChange(preset)}
-                  className={`rounded-md border px-2.5 py-1 font-mono text-xs font-medium tabular-nums whitespace-nowrap transition-colors focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-[#d9531e] ${
-                    active
-                      ? 'border-[#1c1e21] bg-[#1c1e21] text-[#f7f5f0]'
-                      : 'border-[#b3aea3] bg-[#ece9e2] text-[#35383d] hover:bg-[#f7f5f0]'
-                  }`}
+        {showTuning && (
+          <div className="space-y-4 border-t border-[#c6c1b6] px-4 py-3.5">
+            {/* Speed */}
+            <div>
+              <div className="mb-1.5 flex items-center justify-between gap-2">
+                <label htmlFor="speed-slider" className="text-xs font-semibold text-[#2e3136]">
+                  Vitesse de lecture
+                </label>
+                <span
+                  data-testid="speed-value"
+                  className="font-mono text-xs font-semibold tabular-nums text-[#1c1e21]"
                 >
-                  {preset.toFixed(2)}×
-                </button>
-              );
-            })}
-          </div>
-        </div>
-
-        <hr className="border-[#c6c1b6]" />
-
-        {/* Pitch */}
-        <div>
-          <div className="mb-1.5 flex items-center justify-between gap-2">
-            <label htmlFor="pitch-slider" className="text-xs font-semibold text-[#2e3136]">
-              Hauteur de ton
-            </label>
-            <span
-              data-testid="pitch-value"
-              className="font-mono text-xs font-semibold tabular-nums text-[#1c1e21]"
-            >
-              {formatPitchLabel(pitchSemitones)}
-            </span>
-          </div>
-          <input
-            id="pitch-slider"
-            type="range"
-            min={-6}
-            max={6}
-            step={0.5}
-            value={pitchSemitones}
-            onChange={(e) => onPitchChange(Number(e.target.value))}
-            className="walkman-fader w-full"
-          />
-          <div className="mt-2 flex items-center justify-between gap-2">
-            <span className="text-[11px] text-[#55585e]">Plus grave</span>
-            <div className="flex items-center gap-1.5">
-              {PITCH_PRESETS.map((preset) => {
-                const active = Math.abs(pitchSemitones - preset.value) < 0.05;
-                return (
-                  <button
-                    key={preset.label}
-                    type="button"
-                    onClick={() => onPitchChange(preset.value)}
-                    className={`rounded-md border px-2.5 py-1 font-mono text-xs font-medium tabular-nums whitespace-nowrap transition-colors focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-[#d9531e] ${
-                      active
-                        ? 'border-[#1c1e21] bg-[#1c1e21] text-[#f7f5f0]'
-                        : 'border-[#b3aea3] bg-[#ece9e2] text-[#35383d] hover:bg-[#f7f5f0]'
-                    }`}
-                  >
-                    {preset.label}
-                  </button>
-                );
-              })}
+                  {speed.toFixed(2)}×
+                </span>
+              </div>
+              <input
+                id="speed-slider"
+                type="range"
+                min={0.5}
+                max={2.0}
+                step={0.05}
+                value={speed}
+                onChange={(e) => onSpeedChange(Number(e.target.value))}
+                className="walkman-fader w-full"
+              />
+              <div className="mt-2 flex flex-wrap items-center gap-1.5">
+                {SPEED_PRESETS.map((preset) => {
+                  const active = Math.abs(speed - preset) < 0.01;
+                  return (
+                    <button
+                      key={preset}
+                      type="button"
+                      onClick={() => onSpeedChange(preset)}
+                      className={`rounded-md border px-2.5 py-1 font-mono text-xs font-medium tabular-nums whitespace-nowrap transition-colors focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-[#d9531e] ${
+                        active
+                          ? 'border-[#1c1e21] bg-[#1c1e21] text-[#f7f5f0]'
+                          : 'border-[#b3aea3] bg-[#ece9e2] text-[#35383d] hover:bg-[#f7f5f0]'
+                      }`}
+                    >
+                      {preset.toFixed(2)}×
+                    </button>
+                  );
+                })}
+              </div>
             </div>
-            <span className="text-[11px] text-[#55585e]">Plus aigu</span>
-          </div>
-        </div>
 
-        <hr className="border-[#c6c1b6]" />
+            <hr className="border-[#c6c1b6]" />
 
-        {/* Pause */}
-        <div>
-          <div className="mb-1.5 flex items-center justify-between gap-2">
-            <label htmlFor="pause-duration-slider" className="text-xs font-semibold text-[#2e3136]">
-              Pause après la ponctuation
-            </label>
-            <span className="font-mono text-xs font-semibold tabular-nums text-[#1c1e21]">
-              {pauseDurationSeconds.toFixed(1)} s
-            </span>
+            {/* Pitch */}
+            <div>
+              <div className="mb-1.5 flex items-center justify-between gap-2">
+                <label htmlFor="pitch-slider" className="text-xs font-semibold text-[#2e3136]">
+                  Hauteur de ton
+                </label>
+                <span
+                  data-testid="pitch-value"
+                  className="font-mono text-xs font-semibold tabular-nums text-[#1c1e21]"
+                >
+                  {formatPitchLabel(pitchSemitones)}
+                </span>
+              </div>
+              <input
+                id="pitch-slider"
+                type="range"
+                min={-6}
+                max={6}
+                step={0.5}
+                value={pitchSemitones}
+                onChange={(e) => onPitchChange(Number(e.target.value))}
+                className="walkman-fader w-full"
+              />
+              <div className="mt-2 flex items-center justify-between gap-2">
+                <span className="text-[11px] text-[#55585e]">Plus grave</span>
+                <div className="flex items-center gap-1.5">
+                  {PITCH_PRESETS.map((preset) => {
+                    const active = Math.abs(pitchSemitones - preset.value) < 0.05;
+                    return (
+                      <button
+                        key={preset.label}
+                        type="button"
+                        onClick={() => onPitchChange(preset.value)}
+                        className={`rounded-md border px-2.5 py-1 font-mono text-xs font-medium tabular-nums whitespace-nowrap transition-colors focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-[#d9531e] ${
+                          active
+                            ? 'border-[#1c1e21] bg-[#1c1e21] text-[#f7f5f0]'
+                            : 'border-[#b3aea3] bg-[#ece9e2] text-[#35383d] hover:bg-[#f7f5f0]'
+                        }`}
+                      >
+                        {preset.label}
+                      </button>
+                    );
+                  })}
+                </div>
+                <span className="text-[11px] text-[#55585e]">Plus aigu</span>
+              </div>
+            </div>
+
+            <hr className="border-[#c6c1b6]" />
+
+            {/* Pause */}
+            <div>
+              <div className="mb-1.5 flex items-center justify-between gap-2">
+                <label htmlFor="pause-duration-slider" className="text-xs font-semibold text-[#2e3136]">
+                  Pause après la ponctuation
+                </label>
+                <span className="font-mono text-xs font-semibold tabular-nums text-[#1c1e21]">
+                  {pauseDurationSeconds.toFixed(1)} s
+                </span>
+              </div>
+              <input
+                id="pause-duration-slider"
+                type="range"
+                min={0}
+                max={1.5}
+                step={0.1}
+                value={pauseDurationSeconds}
+                onChange={(e) => onPauseDurationChange(Number(e.target.value))}
+                className="walkman-fader w-full"
+              />
+              <p className="mt-1.5 text-[11px] leading-relaxed text-[#55585e]">
+                Silence après les virgules et fins de phrase (0 désactive).
+              </p>
+            </div>
           </div>
-          <input
-            id="pause-duration-slider"
-            type="range"
-            min={0}
-            max={1.5}
-            step={0.1}
-            value={pauseDurationSeconds}
-            onChange={(e) => onPauseDurationChange(Number(e.target.value))}
-            className="walkman-fader w-full"
-          />
-          <p className="mt-1.5 text-[11px] leading-relaxed text-[#55585e]">
-            Silence après les virgules et les signes de fin de phrase (0 désactive). La synthèse
-            peut prendre un peu plus de temps.
-          </p>
-        </div>
+        )}
       </div>
 
       {/* Volume + Flexible MP3 Export (Chapter or Full Book) */}
@@ -763,14 +803,23 @@ export function WalkmanDeck({
           </button>
         </div>
 
-        {exportErrorMessage && (
+        {(playbackErrorMessage || exportErrorMessage) && (
           <div
             role="alert"
             className="flex items-start gap-2 rounded-lg border border-[#d49a89] bg-[#fbefeb] px-3 py-2 text-xs text-[#8a280b]"
           >
             <AlertCircle className="mt-0.5 h-3.5 w-3.5 shrink-0" aria-hidden="true" />
-            <span>{exportErrorMessage}</span>
+            <span>{playbackErrorMessage || exportErrorMessage}</span>
           </div>
+        )}
+
+        {exportSuccessMessage && !readyMp3 && !isExporting && (
+          <p
+            role="status"
+            className="rounded-lg border border-[#cfc9bd] bg-[#efece4] px-3 py-2 text-xs text-[#3b3e44]"
+          >
+            {exportSuccessMessage}
+          </p>
         )}
 
         {readyMp3 && !isExporting && (

@@ -110,7 +110,14 @@ export interface ExportProgress {
   totalSteps: number;
 }
 
-export type GlobalTaskKind = 'export' | 'translation' | 'import';
+export type GlobalTaskKind = 'export' | 'translation' | 'import' | 'playback';
+
+export interface PlaybackBufferingProgress {
+  headline: string;
+  detail: string;
+  completed: number;
+  total: number;
+}
 
 export interface GlobalTaskStep {
   id: number;

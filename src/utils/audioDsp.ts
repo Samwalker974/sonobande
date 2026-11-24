@@ -8,7 +8,7 @@ export interface DecodedWav {
   sampleRate: number;
 }
 
-export const DEFAULT_PAUSE_DURATION_SECONDS = 0.3;
+export const DEFAULT_PAUSE_DURATION_SECONDS = 0;
 
 export function insertSilenceAtOffsets(
   samples: Float32Array,

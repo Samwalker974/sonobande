@@ -22,7 +22,7 @@ import type {
   ReadingPosition,
   ReadyMp3Download,
 } from '../types/walkman';
-import { formatLongDuration } from '../utils/bookSplitter';
+import { formatLongDuration, formatTimecode } from '../utils/bookSplitter';
 import { formatByteSizeFr } from '../utils/mp3Encoder';
 import { MAX_AUTO_SAVED_DOCUMENT_CHARS } from '../utils/documentLimits';
 
@@ -439,6 +439,9 @@ export function ChapterList({
                   <span className="font-mono font-semibold tabular-nums text-[#1c1e21]">
                     Chap. {String(savedPosition.chapterIndex + 1).padStart(2, '0')} · Seg.{' '}
                     {savedPosition.segmentIndex + 1}/{Math.max(1, savedPosition.totalSegments)}
+                    {savedPosition.offsetSeconds && savedPosition.offsetSeconds > 0
+                      ? ` · ${formatTimecode(savedPosition.offsetSeconds)}`
+                      : ''}
                   </span>
                 </div>
                 <p className="text-xs font-medium text-[#2d3036]">

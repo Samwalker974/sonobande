@@ -97,7 +97,7 @@ test('synthesizeInBrowser recycles the voice worker periodically to avoid WASM m
   });
 
   try {
-    for (let i = 0; i < 9; i++) {
+    for (let i = 0; i < 17; i++) {
       const blob = await synthesizeInBrowser(`phrase ${i}`, 'fr_FR-siwis-medium');
       assert.equal(await blob.text(), 'ok');
     }
