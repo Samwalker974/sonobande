@@ -36,18 +36,21 @@ test('createSavedBookRecord stores text only, normalizes translating status, and
     bookmarks: [],
     chapterIndex: 1,
     segmentIndex: 0,
+    offsetSeconds: 14.37,
   });
 
   assert.equal(record.id, session.id);
   assert.equal(record.session.chapters[1].translationStatus, 'needs_translation');
   assert.equal(record.lastPosition.chapterIndex, 1);
   assert.equal(record.lastPosition.segmentIndex, 0);
+  assert.equal(record.lastPosition.offsetSeconds, 14.4);
   assert.ok(record.textSizeBytes > 100);
   assert.equal('audioBlob' in record, false);
   assert.equal('mp3Bytes' in record, false);
 
-  const pos = buildReadingPosition(sanitizeSessionForTextStorage(session), 0, 0);
+  const pos = buildReadingPosition(sanitizeSessionForTextStorage(session), 0, 0, 8.2);
   assert.equal(pos.chapterIndex, 0);
   assert.equal(pos.chapterTitle, 'Chapitre 1 : Le départ');
+  assert.equal(pos.offsetSeconds, 8.2);
   assert.ok(pos.excerpt.includes('Le navire quitte le quai'));
 });

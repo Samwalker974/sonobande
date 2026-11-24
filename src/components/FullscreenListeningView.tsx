@@ -1,6 +1,7 @@
 import {
   Bookmark,
   BookmarkCheck,
+  Disc3,
   Eye,
   EyeOff,
   FastForward,
@@ -122,6 +123,7 @@ export function FullscreenListeningView({
   }, [onExitFullscreen]);
 
   const isPlaying = transportState === 'playing';
+  const isPaused = transportState === 'paused';
   const isBuffering = transportState === 'buffering';
   const hasBook = Boolean(session && activeChapter);
   const totalChapters = session?.chapters.length ?? 0;
@@ -153,68 +155,139 @@ export function FullscreenListeningView({
         ? 'Préparation…'
         : isPlaying
           ? 'Lecture'
-          : transportState === 'paused'
+          : isPaused
             ? 'Pause'
             : hasBook
-              ? 'Prêt'
+              ? segmentCurrentTime > 0
+                ? 'Arrêté (reprise prête)'
+                : 'Prêt'
               : 'Aucun livre';
 
   const chapterTitle = isUntranslated
     ? `Chapitre ${activeChapterIndex + 1} (anglais — à traduire)`
     : activeChapter?.title ?? 'Aucun chapitre actif';
 
+  const effectiveDuration = Math.max(segmentDuration, segmentCurrentTime);
+
   return (
     <section
       data-testid="fullscreen-listening-view"
       aria-label="Mode écoute plein écran"
-      className="flex min-h-screen flex-col bg-[#16181b] text-[#f4f1ea]"
+      className="walkman-retro-chassis flex min-h-screen flex-col text-[#f4f1ea]"
     >
-      {/* Top minimal bar */}
-      <header className="border-b border-[#2b2e35] px-4 py-3 sm:px-8">
+      {/* Retro Brushed Gunmetal Header Bezel */}
+      <header className="border-b-2 border-[#2d3038] bg-[#1a1c21]/95 px-4 py-3 shadow-md sm:px-8">
         <div className="mx-auto flex max-w-3xl items-center justify-between gap-3">
-          <div className="min-w-0">
-            <p className="font-mono text-[11px] uppercase tracking-wider text-[#f07645]">
-              Mode écoute · Animations suspendues
-            </p>
-            <p className="truncate font-display text-sm font-bold text-[#f4f1ea] sm:text-base">
-              {session?.title ?? 'Sonobande'}
-            </p>
+          <div className="flex min-w-0 items-center gap-2.5">
+            <span
+              className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg border border-[#4a4e59] bg-[#24272e] text-[#d9531e] shadow-inner"
+              aria-hidden="true"
+            >
+              <Disc3 className="h-4 w-4" />
+            </span>
+            <div className="min-w-0">
+              <div className="flex items-center gap-2">
+                <span className="font-display text-sm font-bold tracking-[0.18em] text-[#f4f1ea]">
+                  SONOBANDE
+                </span>
+                <span className="hidden rounded border border-[#b5945b]/45 bg-[#2a241b] px-1.5 py-0.5 font-mono text-[10px] font-semibold tracking-wider text-[#d9b87c] sm:inline">
+                  STEREO · C-90
+                </span>
+              </div>
+              <p className="font-mono text-[10px] uppercase tracking-widest text-[#9fa4ae]">
+                Mode écoute plein écran · Position mémorisée
+              </p>
+            </div>
           </div>
 
           <button
             type="button"
             onClick={onExitFullscreen}
             data-testid="exit-fullscreen-btn"
-            className="inline-flex shrink-0 items-center gap-2 rounded-lg border border-[#454952] bg-[#25282e] px-3.5 py-2 text-xs font-semibold text-[#f4f1ea] transition-colors hover:bg-[#32363e] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#d9531e]"
+            className="mech-key-dark inline-flex shrink-0 items-center gap-2 rounded-lg px-3.5 py-2 text-xs font-semibold focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#d9531e]"
           >
-            <Minimize2 className="h-4 w-4 text-[#f07645]" aria-hidden="true" />
+            <Minimize2 className="h-3.5 w-3.5 text-[#f07645]" aria-hidden="true" />
             <span>Quitter le plein écran</span>
           </button>
         </div>
       </header>
 
-      {/* Main focused listening body */}
-      <div className="mx-auto flex w-full max-w-3xl flex-1 flex-col justify-between gap-6 px-4 py-6 sm:px-8 sm:py-8">
-        {/* Chapter header + status */}
-        <div className="space-y-2 text-center">
-          <p className="font-mono text-xs tabular-nums text-[#a6aab3]">
-            {hasBook
-              ? `Chapitre ${activeChapterIndex + 1} / ${totalChapters} · Segment ${activeSegmentIndex + 1} / ${Math.max(1, totalSegmentsInChapter)} · ${statusText}`
-              : 'Aucun document chargé'}
-          </p>
-          <h1 className="font-display text-2xl font-bold tracking-tight text-[#f7f5f0] sm:text-3xl">
-            {chapterTitle}
+      {/* Main Retro Listening Stage */}
+      <div className="mx-auto flex w-full max-w-3xl flex-1 flex-col justify-between gap-5 px-4 py-5 sm:px-8 sm:py-7">
+        {/* Exact Requested Hierarchy Below Header:
+            1. Titre du livre
+            2. Chapitre X / Y · Segment A / B · Statut
+            3. Nom du Chapitre */}
+        <div className="walkman-retro-panel relative overflow-hidden rounded-2xl px-5 py-5 text-center sm:px-7 sm:py-6">
+          {/* Signature Walkman orange top cassette stripe */}
+          <div
+            className="absolute inset-x-0 top-0 h-1.5"
+            style={{
+              background: 'linear-gradient(90deg, #b93e0e 0%, #d9531e 48%, #b5945b 100%)',
+            }}
+            aria-hidden="true"
+          />
+
+          {/* Decorative corner hardware screws */}
+          <span
+            aria-hidden="true"
+            className="absolute top-3.5 left-3.5 h-2 w-2 rounded-full border border-[#4f5460] bg-[#17191d]"
+          />
+          <span
+            aria-hidden="true"
+            className="absolute top-3.5 right-3.5 h-2 w-2 rounded-full border border-[#4f5460] bg-[#17191d]"
+          />
+
+          {/* 1. Titre du livre */}
+          <h1
+            data-testid="fullscreen-book-title"
+            className="font-display text-xl font-bold tracking-tight text-[#f7f4ec] sm:text-2xl"
+          >
+            {session?.title ?? 'Sonobande'}
           </h1>
 
-          {/* Lightweight chapter progress indicator */}
-          <div className="mx-auto mt-3 flex max-w-md items-center gap-3">
-            <div className="h-1.5 flex-1 overflow-hidden rounded-full bg-[#2a2d34]">
+          {/* 2. Chapitre X / Y · Segment A / B · Pause / Lecture */}
+          <div className="mt-3 flex justify-center">
+            <p
+              data-testid="fullscreen-chapter-status"
+              className="retro-lcd-window inline-flex flex-wrap items-center justify-center gap-x-2 gap-y-1 rounded-lg px-3.5 py-1.5 font-mono text-xs font-medium tabular-nums text-[#e8c68d]"
+            >
+              <span
+                className={`inline-block h-2 w-2 rounded-full ${
+                  isPlaying || isBuffering
+                    ? 'bg-[#d9531e]'
+                    : isPaused
+                      ? 'bg-[#d9b87c]'
+                      : 'bg-[#6c717c]'
+                }`}
+                aria-hidden="true"
+              />
+              <span>
+                {hasBook
+                  ? `Chapitre ${activeChapterIndex + 1} / ${totalChapters} · Segment ${activeSegmentIndex + 1} / ${Math.max(1, totalSegmentsInChapter)} · ${statusText}`
+                  : 'Aucun document chargé'}
+              </span>
+            </p>
+          </div>
+
+          {/* 3. Nom du Chapitre */}
+          <h2
+            data-testid="fullscreen-chapter-title"
+            className="mt-3 font-display text-base font-semibold text-[#dcd6c8] sm:text-lg"
+          >
+            {chapterTitle}
+          </h2>
+
+          {/* Retro tape progress gauge */}
+          <div className="mx-auto mt-4 flex max-w-md items-center gap-3">
+            <span className="font-mono text-[10px] tracking-wider text-[#9ea3ae]">BANDE</span>
+            <div className="h-2 flex-1 overflow-hidden rounded-full border border-[#3a3e47] bg-[#111317] p-[1px]">
               <div
-                className="h-full bg-[#d9531e]"
+                className="h-full rounded-full bg-gradient-to-r from-[#d9531e] to-[#e77b3f]"
                 style={{ width: `${Math.round(chapterProgressRatio * 100)}%` }}
               />
             </div>
-            <span className="font-mono text-xs tabular-nums text-[#b5b9c2]">
+            <span className="font-mono text-xs font-semibold tabular-nums text-[#e6dfd1]">
               {Math.round(chapterProgressRatio * 100)}%
             </span>
           </div>
@@ -224,20 +297,20 @@ export function FullscreenListeningView({
         {errorMessage && (
           <div
             role="alert"
-            className="rounded-xl border border-[#7c3523] bg-[#2b1a16] px-4 py-3 text-center text-xs text-[#f6bdb0]"
+            className="rounded-xl border border-[#8e3e29] bg-[#2a1915] px-4 py-3 text-center text-xs text-[#f6c4b8]"
           >
             {errorMessage}
           </div>
         )}
 
-        {/* Active passage only (single segment in DOM — no full-chapter list) */}
+        {/* Active passage card (single segment in DOM — archival paper cassette insert look) */}
         <div className="flex flex-1 flex-col justify-center">
           {!hasBook ? (
-            <div className="rounded-2xl border border-[#2c2f36] bg-[#1e2126] p-8 text-center text-sm text-[#a6aab3]">
+            <div className="walkman-retro-panel rounded-2xl p-8 text-center text-sm text-[#a6aab3]">
               Quittez le plein écran pour importer un livre ou coller un texte.
             </div>
           ) : isUntranslated ? (
-            <div className="rounded-2xl border border-[#3a332b] bg-[#211f1c] p-6 text-center">
+            <div className="walkman-retro-panel rounded-2xl p-6 text-center">
               <p className="text-sm text-[#ddd8ce]">
                 Ce chapitre est en anglais et doit être traduit en français avant l’écoute.
               </p>
@@ -245,7 +318,7 @@ export function FullscreenListeningView({
                 type="button"
                 onClick={onTranslateActiveChapter}
                 disabled={isTranslating}
-                className="mech-key-orange mt-4 inline-flex items-center gap-2 rounded-xl px-4 py-2.5 text-xs font-semibold text-white disabled:opacity-45"
+                className="mech-key-orange mt-4 inline-flex items-center gap-2 rounded-xl px-5 py-2.5 text-xs font-semibold text-white disabled:opacity-45"
               >
                 <Languages className="h-4 w-4" aria-hidden="true" />
                 <span>Traduire ce chapitre en français</span>
@@ -254,53 +327,61 @@ export function FullscreenListeningView({
           ) : showExcerpt ? (
             <div
               data-testid="fullscreen-active-segment"
-              className="rounded-2xl border border-[#2c2f36] bg-[#1d2025] px-5 py-6 sm:px-8 sm:py-7"
+              className="overflow-hidden rounded-2xl border-2 border-[#474b54] bg-[#f4f0e6] text-[#1c1e21] shadow-xl"
             >
-              <div className="mb-3 flex items-center justify-between gap-2 text-[11px] text-[#9fa3ab]">
-                <span className="font-mono tabular-nums">
-                  Passage actif ({activeSegmentIndex + 1}/{Math.max(1, totalSegmentsInChapter)})
+              {/* Cassette J-card warm paper header strip */}
+              <div className="flex items-center justify-between gap-2 border-b border-[#dad2c3] bg-[#ebe5d8] px-4 py-2 text-[11px]">
+                <span className="font-mono font-semibold tabular-nums text-[#4a473f]">
+                  FACE A · PASSAGE {activeSegmentIndex + 1}/{Math.max(1, totalSegmentsInChapter)}
                 </span>
                 <div className="flex items-center gap-1.5">
                   <button
                     type="button"
                     onClick={onPrevSegment}
                     disabled={activeSegmentIndex <= 0 || isExporting}
-                    className="rounded border border-[#393d45] bg-[#25282f] px-2 py-0.5 text-[11px] text-[#dcdedf] hover:bg-[#31353e] disabled:opacity-35"
+                    className="mech-key rounded-md px-2.5 py-1 font-mono text-[11px] font-semibold text-[#1c1e21] disabled:opacity-40"
                   >
-                    Seg. préc.
+                    ‹ Seg. préc.
                   </button>
                   <button
                     type="button"
                     onClick={onNextSegment}
                     disabled={activeSegmentIndex >= totalSegmentsInChapter - 1 || isExporting}
-                    className="rounded border border-[#393d45] bg-[#25282f] px-2 py-0.5 text-[11px] text-[#dcdedf] hover:bg-[#31353e] disabled:opacity-35"
+                    className="mech-key rounded-md px-2.5 py-1 font-mono text-[11px] font-semibold text-[#1c1e21] disabled:opacity-40"
                   >
-                    Seg. suiv.
+                    Seg. suiv. ›
                   </button>
                 </div>
               </div>
-              <div className="max-h-[36vh] space-y-3 overflow-y-auto pr-1 text-base leading-relaxed text-[#f2efe8] sm:text-lg">
+
+              <div className="max-h-[34vh] space-y-3 overflow-y-auto px-5 py-5 text-base leading-[1.78] text-[#1f2125] sm:px-7 sm:py-6 sm:text-[17px]">
                 {activeParagraphs.length > 0 ? (
                   activeParagraphs.map((para, index) => <p key={index}>{para}</p>)
                 ) : (
-                  <p className="text-sm text-[#9fa3ab]">Prêt pour la lecture.</p>
+                  <p className="text-sm text-[#6a675f]">Prêt pour la lecture.</p>
                 )}
               </div>
             </div>
           ) : (
-            <div className="rounded-2xl border border-[#2a2d34] bg-[#1b1d22] px-6 py-8 text-center text-xs text-[#9fa3ab]">
-              Texte masqué pour une écoute sans distraction.
+            <div className="walkman-retro-panel rounded-2xl px-6 py-8 text-center font-mono text-xs text-[#a7acb6]">
+              FEUILLET TEXTE MASQUÉ · ÉCOUTE CONCENTRÉE
             </div>
           )}
         </div>
 
-        {/* Transport deck + scrubber + compact utility bar */}
-        <div className="space-y-4 rounded-2xl border border-[#2e3138] bg-[#1e2126] p-4 sm:p-5">
-          {/* Segment scrubber & timecode */}
-          <div className="space-y-1.5">
-            <div className="flex items-center justify-between font-mono text-xs tabular-nums text-[#b5b9c2]">
-              <span>{formatTimecode(segmentCurrentTime)}</span>
-              <span>{formatTimecode(segmentDuration)}</span>
+        {/* Retro Mechanical Walkman Transport Console */}
+        <div className="walkman-retro-panel relative space-y-4 rounded-2xl p-4 sm:p-5">
+          {/* LCD Timecode Counter + Recessed Hardware Fader */}
+          <div className="space-y-2.5 rounded-xl border border-[#32353e] bg-[#14161a] p-3.5 shadow-inner">
+            <div className="flex items-center justify-between gap-3">
+              <span className="font-mono text-[10px] font-semibold uppercase tracking-[0.16em] text-[#9fa4ae]">
+                Compteur de bande
+              </span>
+              <div className="retro-lcd-window rounded-md px-3 py-1 font-mono text-xs font-semibold tracking-wider tabular-nums text-[#f3d19c]">
+                <span>{formatTimecode(segmentCurrentTime)}</span>
+                <span className="mx-1.5 text-[#6f7480]">/</span>
+                <span className="text-[#a5aab4]">{formatTimecode(effectiveDuration)}</span>
+              </div>
             </div>
             <label htmlFor="fullscreen-scrubber" className="sr-only">
               Position dans le segment audio
@@ -309,114 +390,117 @@ export function FullscreenListeningView({
               id="fullscreen-scrubber"
               type="range"
               min={0}
-              max={Math.max(0.1, segmentDuration)}
+              max={Math.max(0.1, effectiveDuration)}
               step={0.1}
-              value={Math.min(segmentCurrentTime, segmentDuration || 0)}
-              disabled={!hasBook || segmentDuration <= 0}
+              value={Math.min(segmentCurrentTime, effectiveDuration || 0)}
+              disabled={!hasBook || effectiveDuration <= 0}
               onChange={(e) => onSeekSegment(Number(e.target.value))}
               className="walkman-fader w-full disabled:opacity-40"
             />
           </div>
 
-          {/* Primary transport buttons */}
-          <div
-            role="group"
-            aria-label="Commandes de lecture plein écran"
-            className="grid grid-cols-3 gap-2 sm:grid-cols-6"
-          >
-            <button
-              type="button"
-              onClick={onPrevChapter}
-              disabled={!hasBook || activeChapterIndex <= 0}
-              aria-label="Chapitre précédent"
-              className="flex min-h-[52px] flex-col items-center justify-center gap-1 rounded-xl border border-[#3a3e47] bg-[#262a31] px-2 py-2 text-xs font-semibold text-[#f4f1ea] hover:bg-[#31363f] disabled:opacity-35"
+          {/* 3D Tactile Mechanical Transport Keys */}
+          <div className="rounded-xl border border-[#31343d] bg-[#121418] p-2.5 shadow-inner">
+            <div
+              role="group"
+              aria-label="Commandes mécaniques plein écran"
+              className="grid grid-cols-3 gap-2.5 sm:grid-cols-6"
             >
-              <SkipBack className="h-4 w-4" aria-hidden="true" />
-              <span>PRÉC.</span>
-            </button>
-
-            <button
-              type="button"
-              onClick={onRewind}
-              disabled={!hasBook || isExporting}
-              aria-label="Retour rapide"
-              className="flex min-h-[52px] flex-col items-center justify-center gap-1 rounded-xl border border-[#3a3e47] bg-[#262a31] px-2 py-2 text-xs font-semibold text-[#f4f1ea] hover:bg-[#31363f] disabled:opacity-35"
-            >
-              <Rewind className="h-4 w-4" aria-hidden="true" />
-              <span>REW</span>
-            </button>
-
-            {isPlaying || isBuffering ? (
               <button
                 type="button"
-                onClick={onPause}
-                disabled={!hasBook}
-                aria-label="Mettre en pause"
-                className="mech-key-orange flex min-h-[52px] flex-col items-center justify-center gap-1 rounded-xl px-2 py-2 text-xs font-semibold text-white disabled:opacity-45"
+                onClick={onPrevChapter}
+                disabled={!hasBook || activeChapterIndex <= 0}
+                aria-label="Chapitre précédent"
+                className="mech-key-dark flex min-h-[58px] flex-col items-center justify-center gap-1 rounded-lg px-2 py-2 text-[11px] font-bold tracking-wider disabled:opacity-35"
               >
-                <Pause className="h-4 w-4 fill-current" aria-hidden="true" />
-                <span>PAUSE</span>
+                <SkipBack className="h-4 w-4" aria-hidden="true" />
+                <span>PRÉC.</span>
               </button>
-            ) : (
+
               <button
                 type="button"
-                onClick={onPlay}
+                onClick={onRewind}
                 disabled={!hasBook || isExporting}
-                aria-label="Lire le chapitre actif"
-                className="mech-key-orange flex min-h-[52px] flex-col items-center justify-center gap-1 rounded-xl px-2 py-2 text-xs font-semibold text-white disabled:opacity-45"
+                aria-label="Retour rapide"
+                className="mech-key-dark flex min-h-[58px] flex-col items-center justify-center gap-1 rounded-lg px-2 py-2 text-[11px] font-bold tracking-wider disabled:opacity-35"
               >
-                <Play className="h-4 w-4 fill-current" aria-hidden="true" />
-                <span>PLAY</span>
+                <Rewind className="h-4 w-4" aria-hidden="true" />
+                <span>REW</span>
               </button>
-            )}
 
-            <button
-              type="button"
-              onClick={onStop}
-              disabled={!hasBook}
-              aria-label="Arrêter"
-              className="flex min-h-[52px] flex-col items-center justify-center gap-1 rounded-xl border border-[#3a3e47] bg-[#262a31] px-2 py-2 text-xs font-semibold text-[#f4f1ea] hover:bg-[#31363f] disabled:opacity-35"
-            >
-              <Square className="h-3.5 w-3.5 fill-current" aria-hidden="true" />
-              <span>STOP</span>
-            </button>
+              {isPlaying || isBuffering ? (
+                <button
+                  type="button"
+                  onClick={onPause}
+                  disabled={!hasBook}
+                  aria-pressed={true}
+                  aria-label="Mettre en pause"
+                  className="mech-key-orange mech-key-pressed flex min-h-[58px] flex-col items-center justify-center gap-1 rounded-lg px-2 py-2 text-[11px] font-bold tracking-wider text-white disabled:opacity-45"
+                >
+                  <Pause className="h-4 w-4 fill-current" aria-hidden="true" />
+                  <span>PAUSE</span>
+                </button>
+              ) : (
+                <button
+                  type="button"
+                  onClick={onPlay}
+                  disabled={!hasBook || isExporting}
+                  aria-label="Lire ou reprendre exactement au point d’arrêt"
+                  className="mech-key-orange flex min-h-[58px] flex-col items-center justify-center gap-1 rounded-lg px-2 py-2 text-[11px] font-bold tracking-wider text-white disabled:opacity-45"
+                >
+                  <Play className="h-4 w-4 fill-current" aria-hidden="true" />
+                  <span>PLAY</span>
+                </button>
+              )}
 
-            <button
-              type="button"
-              onClick={onFastForward}
-              disabled={!hasBook || isExporting}
-              aria-label="Avance rapide"
-              className="flex min-h-[52px] flex-col items-center justify-center gap-1 rounded-xl border border-[#3a3e47] bg-[#262a31] px-2 py-2 text-xs font-semibold text-[#f4f1ea] hover:bg-[#31363f] disabled:opacity-35"
-            >
-              <FastForward className="h-4 w-4" aria-hidden="true" />
-              <span>FF</span>
-            </button>
+              <button
+                type="button"
+                onClick={onStop}
+                disabled={!hasBook}
+                aria-label="Arrêter la lecture en conservant la position"
+                className="mech-key-dark flex min-h-[58px] flex-col items-center justify-center gap-1 rounded-lg px-2 py-2 text-[11px] font-bold tracking-wider disabled:opacity-35"
+              >
+                <Square className="h-3.5 w-3.5 fill-current text-[#e8c68d]" aria-hidden="true" />
+                <span>STOP</span>
+              </button>
 
-            <button
-              type="button"
-              onClick={onNextChapter}
-              disabled={!hasBook || activeChapterIndex >= totalChapters - 1}
-              aria-label="Chapitre suivant"
-              className="flex min-h-[52px] flex-col items-center justify-center gap-1 rounded-xl border border-[#3a3e47] bg-[#262a31] px-2 py-2 text-xs font-semibold text-[#f4f1ea] hover:bg-[#31363f] disabled:opacity-35"
-            >
-              <SkipForward className="h-4 w-4" aria-hidden="true" />
-              <span>SUIV.</span>
-            </button>
+              <button
+                type="button"
+                onClick={onFastForward}
+                disabled={!hasBook || isExporting}
+                aria-label="Avance rapide"
+                className="mech-key-dark flex min-h-[58px] flex-col items-center justify-center gap-1 rounded-lg px-2 py-2 text-[11px] font-bold tracking-wider disabled:opacity-35"
+              >
+                <FastForward className="h-4 w-4" aria-hidden="true" />
+                <span>FF</span>
+              </button>
+
+              <button
+                type="button"
+                onClick={onNextChapter}
+                disabled={!hasBook || activeChapterIndex >= totalChapters - 1}
+                aria-label="Chapitre suivant"
+                className="mech-key-dark flex min-h-[58px] flex-col items-center justify-center gap-1 rounded-lg px-2 py-2 text-[11px] font-bold tracking-wider disabled:opacity-35"
+              >
+                <SkipForward className="h-4 w-4" aria-hidden="true" />
+                <span>SUIV.</span>
+              </button>
+            </div>
           </div>
 
-          {/* Volume + Bookmark + Text/Tuning toggles */}
-          <div className="flex flex-wrap items-center justify-between gap-3 border-t border-[#2d3037] pt-3">
-            <div className="flex min-w-[180px] flex-1 items-center gap-2">
+          {/* Volume + Mechanical Retro Utility Switches */}
+          <div className="flex flex-wrap items-center justify-between gap-3 pt-1">
+            <div className="flex min-w-[180px] flex-1 items-center gap-2.5 rounded-lg border border-[#343842] bg-[#16181d] px-3 py-2">
               <button
                 type="button"
                 onClick={onToggleMute}
                 aria-label={muted ? 'Réactiver le son' : 'Couper le son'}
-                className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg border border-[#3a3e47] bg-[#25282f] text-[#f4f1ea] hover:bg-[#32363f]"
+                className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md border border-[#454954] bg-[#252830] text-[#f4f1ea] hover:bg-[#323640]"
               >
                 {muted || volume === 0 ? (
-                  <VolumeX className="h-4 w-4" aria-hidden="true" />
+                  <VolumeX className="h-3.5 w-3.5 text-[#f07645]" aria-hidden="true" />
                 ) : (
-                  <Volume2 className="h-4 w-4" aria-hidden="true" />
+                  <Volume2 className="h-3.5 w-3.5" aria-hidden="true" />
                 )}
               </button>
               <label htmlFor="fullscreen-volume" className="sr-only">
@@ -432,7 +516,7 @@ export function FullscreenListeningView({
                 onChange={(e) => onVolumeChange(Number(e.target.value))}
                 className="walkman-fader w-full"
               />
-              <span className="w-9 text-right font-mono text-xs tabular-nums text-[#b5b9c2]">
+              <span className="w-9 text-right font-mono text-xs tabular-nums text-[#d8d3c8]">
                 {Math.round((muted ? 0 : volume) * 100)}%
               </span>
             </div>
@@ -442,16 +526,16 @@ export function FullscreenListeningView({
                 type="button"
                 onClick={onAddBookmark}
                 disabled={!hasBook || isUntranslated}
-                className={`inline-flex items-center gap-1.5 rounded-lg border px-2.5 py-1.5 text-xs font-semibold transition-colors disabled:opacity-40 ${
+                className={`mech-key-dark inline-flex items-center gap-1.5 rounded-lg px-3 py-2 text-xs font-semibold disabled:opacity-40 ${
                   isCurrentSegmentBookmarked
-                    ? 'border-[#d9531e] bg-[#2f221d] text-[#f8c1aa]'
-                    : 'border-[#3a3e47] bg-[#25282f] text-[#f4f1ea] hover:bg-[#32363f]'
+                    ? 'mech-key-pressed !border-[#d9531e] !text-[#f8c1aa]'
+                    : ''
                 }`}
               >
                 {isCurrentSegmentBookmarked ? (
                   <BookmarkCheck className="h-3.5 w-3.5 text-[#f07645]" aria-hidden="true" />
                 ) : (
-                  <Bookmark className="h-3.5 w-3.5" aria-hidden="true" />
+                  <Bookmark className="h-3.5 w-3.5 text-[#d9b87c]" aria-hidden="true" />
                 )}
                 <span>Repère</span>
               </button>
@@ -459,12 +543,12 @@ export function FullscreenListeningView({
               <button
                 type="button"
                 onClick={() => setShowExcerpt((prev) => !prev)}
-                className="inline-flex items-center gap-1.5 rounded-lg border border-[#3a3e47] bg-[#25282f] px-2.5 py-1.5 text-xs font-medium text-[#f4f1ea] hover:bg-[#32363f]"
+                className="mech-key-dark inline-flex items-center gap-1.5 rounded-lg px-3 py-2 text-xs font-semibold"
               >
                 {showExcerpt ? (
-                  <EyeOff className="h-3.5 w-3.5" aria-hidden="true" />
+                  <EyeOff className="h-3.5 w-3.5 text-[#d9b87c]" aria-hidden="true" />
                 ) : (
-                  <Eye className="h-3.5 w-3.5" aria-hidden="true" />
+                  <Eye className="h-3.5 w-3.5 text-[#d9b87c]" aria-hidden="true" />
                 )}
                 <span>{showExcerpt ? 'Masquer texte' : 'Afficher texte'}</span>
               </button>
@@ -473,28 +557,28 @@ export function FullscreenListeningView({
                 type="button"
                 onClick={() => setShowTuning((prev) => !prev)}
                 aria-expanded={showTuning}
-                className={`inline-flex items-center gap-1.5 rounded-lg border px-2.5 py-1.5 text-xs font-medium ${
-                  showTuning
-                    ? 'border-[#d9531e] bg-[#2f221d] text-[#f8c1aa]'
-                    : 'border-[#3a3e47] bg-[#25282f] text-[#f4f1ea] hover:bg-[#32363f]'
+                className={`mech-key-dark inline-flex items-center gap-1.5 rounded-lg px-3 py-2 text-xs font-semibold ${
+                  showTuning ? 'mech-key-pressed !border-[#d9531e] !text-[#f8c1aa]' : ''
                 }`}
               >
-                <SlidersHorizontal className="h-3.5 w-3.5" aria-hidden="true" />
-                <span>Réglages ({speed.toFixed(2)}×)</span>
+                <SlidersHorizontal className="h-3.5 w-3.5 text-[#f07645]" aria-hidden="true" />
+                <span className="font-mono">{speed.toFixed(2)}×</span>
               </button>
             </div>
           </div>
 
-          {/* Optional tuning drawer (mounted only when opened) */}
+          {/* Optional retro tuning tray (mounted only when opened) */}
           {showTuning && (
-            <div className="space-y-3 border-t border-[#2d3037] pt-3 text-xs">
+            <div className="space-y-3 rounded-xl border border-[#353944] bg-[#15171c] p-3.5 text-xs">
               <div className="flex items-center justify-between">
-                <span className="font-semibold text-[#e6e2da]">Vitesse, hauteur et pauses</span>
+                <span className="font-mono text-[11px] font-semibold uppercase tracking-wider text-[#d9b87c]">
+                  Égaliseur de bande · Vitesse / Ton / Pauses
+                </span>
                 {isTuningModified && (
                   <button
                     type="button"
                     onClick={onResetTuning}
-                    className="inline-flex items-center gap-1 text-[#f07645] hover:underline"
+                    className="inline-flex items-center gap-1 font-semibold text-[#f07645] hover:underline"
                   >
                     <RotateCcw className="h-3 w-3" aria-hidden="true" />
                     <span>Réinitialiser</span>
@@ -502,11 +586,13 @@ export function FullscreenListeningView({
                 )}
               </div>
 
-              <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
+              <div className="grid grid-cols-1 gap-3.5 sm:grid-cols-3">
                 <div>
-                  <div className="mb-1 flex justify-between text-[#c9cdd5]">
+                  <div className="mb-1 flex justify-between text-[#d4d0c5]">
                     <label htmlFor="fs-speed">Vitesse</label>
-                    <span className="font-mono tabular-nums">{speed.toFixed(2)}×</span>
+                    <span className="font-mono font-semibold tabular-nums text-[#f3d19c]">
+                      {speed.toFixed(2)}×
+                    </span>
                   </div>
                   <input
                     id="fs-speed"
@@ -518,16 +604,16 @@ export function FullscreenListeningView({
                     onChange={(e) => onSpeedChange(Number(e.target.value))}
                     className="walkman-fader w-full"
                   />
-                  <div className="mt-1.5 flex flex-wrap gap-1">
+                  <div className="mt-2 flex flex-wrap gap-1.5">
                     {SPEED_PRESETS.map((preset) => (
                       <button
                         key={preset}
                         type="button"
                         onClick={() => onSpeedChange(preset)}
-                        className={`rounded border px-2 py-0.5 font-mono text-[11px] ${
+                        className={`rounded border px-2 py-0.5 font-mono text-[11px] font-semibold ${
                           Math.abs(speed - preset) < 0.01
                             ? 'border-[#d9531e] bg-[#d9531e] text-white'
-                            : 'border-[#3a3e47] bg-[#25282f] text-[#cfd3db]'
+                            : 'border-[#3f4450] bg-[#24272f] text-[#d5d8e0] hover:bg-[#30343f]'
                         }`}
                       >
                         {preset.toFixed(2)}×
@@ -537,9 +623,11 @@ export function FullscreenListeningView({
                 </div>
 
                 <div>
-                  <div className="mb-1 flex justify-between text-[#c9cdd5]">
+                  <div className="mb-1 flex justify-between text-[#d4d0c5]">
                     <label htmlFor="fs-pitch">Hauteur</label>
-                    <span className="font-mono tabular-nums">{formatPitchLabel(pitchSemitones)}</span>
+                    <span className="font-mono font-semibold tabular-nums text-[#f3d19c]">
+                      {formatPitchLabel(pitchSemitones)}
+                    </span>
                   </div>
                   <input
                     id="fs-pitch"
@@ -554,9 +642,11 @@ export function FullscreenListeningView({
                 </div>
 
                 <div>
-                  <div className="mb-1 flex justify-between text-[#c9cdd5]">
+                  <div className="mb-1 flex justify-between text-[#d4d0c5]">
                     <label htmlFor="fs-pause">Pause ponctuation</label>
-                    <span className="font-mono tabular-nums">{pauseDurationSeconds.toFixed(1)} s</span>
+                    <span className="font-mono font-semibold tabular-nums text-[#f3d19c]">
+                      {pauseDurationSeconds.toFixed(1)} s
+                    </span>
                   </div>
                   <input
                     id="fs-pause"

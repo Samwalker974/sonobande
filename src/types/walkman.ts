@@ -61,6 +61,7 @@ export interface ReadingPosition {
   chapterTitle: string;
   segmentIndex: number;
   totalSegments: number;
+  offsetSeconds?: number;
   excerpt: string;
   updatedAt: number;
 }

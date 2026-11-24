@@ -70,7 +70,13 @@ export interface WalkmanAudioController {
   fastForward: () => void;
   seekSegment: (seconds: number) => void;
   jumpToSegment: (segmentIndex: number, autoPlay?: boolean) => void;
-  jumpToLocation: (chapterIndex: number, segmentIndex: number, autoPlay?: boolean) => void;
+  jumpToLocation: (
+    chapterIndex: number,
+    segmentIndex: number,
+    autoPlay?: boolean,
+    offsetSeconds?: number
+  ) => void;
+  getLiveOffsetSeconds: () => number;
   fetchSegmentAudio: (
     chapter: ChapterItem,
     segmentIndex: number,
@@ -729,18 +735,31 @@ export function useWalkmanAudio({
     };
   }, [stopAllHardware]);
 
+  const getLiveOffsetSeconds = useCallback(() => {
+    if (stateRef.current === 'playing' && audioCtxRef.current && sourceRef.current) {
+      const elapsed = audioCtxRef.current.currentTime - startWallTimeRef.current;
+      const dur = segmentDurationRef.current;
+      return dur > 0
+        ? Math.max(0, Math.min(dur, offsetSecondsRef.current + elapsed))
+        : Math.max(0, offsetSecondsRef.current + elapsed);
+    }
+    return Math.max(0, offsetSecondsRef.current);
+  }, []);
+
   const play = useCallback(
     async (overrideChapterIndex?: number, overrideSegmentIndex?: number) => {
       const sess = latestRef.current.session;
       if (!sess || sess.chapters.length === 0) return;
 
+      const isExplicitJump =
+        overrideChapterIndex !== undefined || overrideSegmentIndex !== undefined;
       const targetChapter = overrideChapterIndex ?? latestRef.current.activeChapterIndex;
       const targetSegment = overrideSegmentIndex ?? latestRef.current.activeSegmentIndex;
+      const resumeOffset = isExplicitJump ? 0 : Math.max(0, offsetSecondsRef.current);
 
       if (
-        overrideChapterIndex === undefined &&
-        overrideSegmentIndex === undefined &&
-        stateRef.current === 'paused' &&
+        !isExplicitJump &&
+        (stateRef.current === 'paused' || stateRef.current === 'stopped') &&
         activePcmRef.current
       ) {
         playbackRunIdRef.current++;
@@ -749,13 +768,13 @@ export function useWalkmanAudio({
           activePcmRef.current,
           targetChapter,
           targetSegment,
-          offsetSecondsRef.current,
+          resumeOffset,
           runId
         );
         return;
       }
 
-      await startSegmentPlayback(targetChapter, targetSegment, 0);
+      await startSegmentPlayback(targetChapter, targetSegment, resumeOffset);
     },
     [playPcmBuffer, startSegmentPlayback]
   );
@@ -777,12 +796,12 @@ export function useWalkmanAudio({
   }, [stopAllHardware]);
 
   const stop = useCallback(() => {
+    const livePos = getLiveOffsetSeconds();
     stopAllHardware();
-    offsetSecondsRef.current = 0;
-    setSegmentCurrentTime(0);
-    setActiveSegmentIndex(0);
+    offsetSecondsRef.current = livePos;
+    setSegmentCurrentTime(livePos);
     setTransportState('stopped');
-  }, [stopAllHardware]);
+  }, [getLiveOffsetSeconds, stopAllHardware]);
 
   const seekSegment = useCallback(
     (seconds: number) => {
@@ -862,19 +881,21 @@ export function useWalkmanAudio({
   );
 
   const jumpToLocation = useCallback(
-    (chapterIndex: number, segmentIndex: number, autoPlay = false) => {
+    (chapterIndex: number, segmentIndex: number, autoPlay = false, offsetSeconds = 0) => {
       const sess = latestRef.current.session;
       if (!sess || chapterIndex < 0 || chapterIndex >= sess.chapters.length) return;
       const ch = sess.chapters[chapterIndex];
       const clampedSeg = Math.max(0, Math.min(segmentIndex, Math.max(0, ch.segments.length - 1)));
+      const safeOffset = Math.max(0, Number.isFinite(offsetSeconds) ? offsetSeconds : 0);
       latestRef.current.onChapterIndexChange(chapterIndex);
       if (autoPlay) {
-        void startSegmentPlayback(chapterIndex, clampedSeg, 0);
+        void startSegmentPlayback(chapterIndex, clampedSeg, safeOffset);
       } else {
         stopAllHardware();
+        activePcmRef.current = null;
         setActiveSegmentIndex(clampedSeg);
-        offsetSecondsRef.current = 0;
-        setSegmentCurrentTime(0);
+        offsetSecondsRef.current = safeOffset;
+        setSegmentCurrentTime(safeOffset);
         setTransportState('stopped');
       }
     },
@@ -916,6 +937,7 @@ export function useWalkmanAudio({
     seekSegment,
     jumpToSegment,
     jumpToLocation,
+    getLiveOffsetSeconds,
     fetchSegmentAudio,
     decodeAudioToMonoPcm,
     clearAudioMemory,

@@ -91,13 +91,91 @@ export function sanitizeSessionForTextStorage(session: BookSession): BookSession
   };
 }
 
+const RESUME_SNAPSHOT_PREFIX = 'sonobande:resume:';
+
+export interface ResumePositionSnapshot {
+  chapterIndex: number;
+  segmentIndex: number;
+  offsetSeconds: number;
+  updatedAt: number;
+}
+
+function normalizeOffsetSeconds(value: unknown): number {
+  if (typeof value !== 'number' || !Number.isFinite(value) || value < 0) return 0;
+  return Math.round(value * 10) / 10;
+}
+
+export function saveResumePositionSnapshot(
+  bookId: string,
+  snapshot: Omit<ResumePositionSnapshot, 'updatedAt'> & { updatedAt?: number }
+): void {
+  try {
+    if (typeof localStorage === 'undefined') return;
+    const payload: ResumePositionSnapshot = {
+      chapterIndex: Math.max(0, Math.floor(snapshot.chapterIndex)),
+      segmentIndex: Math.max(0, Math.floor(snapshot.segmentIndex)),
+      offsetSeconds: normalizeOffsetSeconds(snapshot.offsetSeconds),
+      updatedAt: snapshot.updatedAt ?? Date.now(),
+    };
+    localStorage.setItem(`${RESUME_SNAPSHOT_PREFIX}${bookId}`, JSON.stringify(payload));
+  } catch {
+    // Ignore storage restriction
+  }
+}
+
+export function loadResumePositionSnapshot(bookId: string): ResumePositionSnapshot | null {
+  try {
+    if (typeof localStorage === 'undefined') return null;
+    const raw = localStorage.getItem(`${RESUME_SNAPSHOT_PREFIX}${bookId}`);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as Partial<ResumePositionSnapshot>;
+    if (
+      typeof parsed.chapterIndex !== 'number' ||
+      typeof parsed.segmentIndex !== 'number'
+    ) {
+      return null;
+    }
+    return {
+      chapterIndex: Math.max(0, Math.floor(parsed.chapterIndex)),
+      segmentIndex: Math.max(0, Math.floor(parsed.segmentIndex)),
+      offsetSeconds: normalizeOffsetSeconds(parsed.offsetSeconds),
+      updatedAt: typeof parsed.updatedAt === 'number' ? parsed.updatedAt : 0,
+    };
+  } catch {
+    return null;
+  }
+}
+
+export function clearResumePositionSnapshot(bookId?: string): void {
+  try {
+    if (typeof localStorage === 'undefined') return;
+    if (bookId) {
+      localStorage.removeItem(`${RESUME_SNAPSHOT_PREFIX}${bookId}`);
+      return;
+    }
+    const keysToRemove: string[] = [];
+    for (let i = 0; i < localStorage.length; i++) {
+      const key = localStorage.key(i);
+      if (key && key.startsWith(RESUME_SNAPSHOT_PREFIX)) {
+        keysToRemove.push(key);
+      }
+    }
+    for (const key of keysToRemove) {
+      localStorage.removeItem(key);
+    }
+  } catch {
+    // Ignore storage restriction
+  }
+}
+
 /**
  * Builds an up-to-date automatic stop-position bookmark for a book session.
  */
 export function buildReadingPosition(
   session: BookSession,
   chapterIndex: number,
-  segmentIndex: number
+  segmentIndex: number,
+  offsetSeconds = 0
 ): ReadingPosition {
   const clampedChapterIdx = Math.max(
     0,
@@ -119,6 +197,7 @@ export function buildReadingPosition(
       : chapter?.title ?? `Chapitre ${clampedChapterIdx + 1}`,
     segmentIndex: clampedSegmentIdx,
     totalSegments,
+    offsetSeconds: normalizeOffsetSeconds(offsetSeconds),
     excerpt: rawSegmentText ? buildBookmarkExcerpt(rawSegmentText, 110) : 'Début du chapitre',
     updatedAt: Date.now(),
   };
@@ -132,13 +211,15 @@ export function createSavedBookRecord(params: {
   bookmarks: BookmarkItem[];
   chapterIndex: number;
   segmentIndex: number;
+  offsetSeconds?: number;
   existingSavedAt?: number;
 }): SavedBookRecord {
   const cleanSession = sanitizeSessionForTextStorage(params.session);
   const lastPosition = buildReadingPosition(
     cleanSession,
     params.chapterIndex,
-    params.segmentIndex
+    params.segmentIndex,
+    params.offsetSeconds ?? 0
   );
   const now = Date.now();
   const base: Omit<SavedBookRecord, 'textSizeBytes'> = {
@@ -198,7 +279,8 @@ function normalizeSavedBookRecord(raw: unknown): SavedBookRecord | null {
   const lastPosition = buildReadingPosition(
     cleanSession,
     typeof rawPos?.chapterIndex === 'number' ? rawPos.chapterIndex : 0,
-    typeof rawPos?.segmentIndex === 'number' ? rawPos.segmentIndex : 0
+    typeof rawPos?.segmentIndex === 'number' ? rawPos.segmentIndex : 0,
+    typeof rawPos?.offsetSeconds === 'number' ? rawPos.offsetSeconds : 0
   );
   if (typeof rawPos?.updatedAt === 'number') {
     lastPosition.updatedAt = rawPos.updatedAt;

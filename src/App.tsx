@@ -33,12 +33,15 @@ import {
 } from './utils/bookSplitter';
 import {
   clearAllSavedBooks,
+  clearResumePositionSnapshot,
   createSavedBookRecord,
   deleteSavedBook,
   getLastActiveBookId,
   loadAllSavedBooks,
+  loadResumePositionSnapshot,
   measureBrowserStorage,
   saveBookRecord,
+  saveResumePositionSnapshot,
   setLastActiveBookId,
 } from './utils/bookStorage';
 import { createBrowserMp3Session, type BrowserMp3Session } from './utils/browserMp3';
@@ -86,6 +89,27 @@ function buildDraftPreview(bookSession: BookSession): string {
 
 const MIN_VALID_ONNX_BYTES = 1_000_000;
 const MIN_VALID_JSON_BYTES = 100;
+const FULLSCREEN_STORAGE_KEY = 'sonobande:fullscreen-listening';
+
+function readSavedFullscreenPreference(): boolean {
+  try {
+    return window.localStorage.getItem(FULLSCREEN_STORAGE_KEY) === 'true';
+  } catch {
+    return false;
+  }
+}
+
+function writeSavedFullscreenPreference(enabled: boolean): void {
+  try {
+    if (enabled) {
+      window.localStorage.setItem(FULLSCREEN_STORAGE_KEY, 'true');
+    } else {
+      window.localStorage.removeItem(FULLSCREEN_STORAGE_KEY);
+    }
+  } catch {
+    // Ignore storage restriction
+  }
+}
 
 async function isVoiceModelCached(voiceId: NeuralVoiceId): Promise<boolean> {
   if (!navigator.storage?.getDirectory) return false;
@@ -162,7 +186,9 @@ export default function App() {
   const [muted, setMuted] = useState<boolean>(false);
 
   // Import, errors, fullscreen listening & MP3 export progress
-  const [isFullscreenListening, setIsFullscreenListening] = useState(false);
+  const [isFullscreenListening, setIsFullscreenListening] = useState<boolean>(() =>
+    readSavedFullscreenPreference()
+  );
   const [isImportingFile, setIsImportingFile] = useState(false);
   const [importProgress, setImportProgress] = useState<DocumentImportProgress | null>(null);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
@@ -190,6 +216,7 @@ export default function App() {
     bookId: string;
     chapterIndex: number;
     segmentIndex: number;
+    offsetSeconds: number;
     autoPlay: boolean;
   } | null>(null);
 
@@ -218,18 +245,35 @@ export default function App() {
 
       if (books.length > 0) {
         const target = books.find((b) => b.id === lastActiveId) ?? books[0];
+        const snapshot = loadResumePositionSnapshot(target.id);
+        const useSnapshot = Boolean(snapshot && snapshot.updatedAt >= target.lastPosition.updatedAt);
+        const restoredChapterIdx = useSnapshot
+          ? Math.max(0, Math.min(snapshot!.chapterIndex, target.session.chapters.length - 1))
+          : target.lastPosition.chapterIndex;
+        const restoredChapter = target.session.chapters[restoredChapterIdx];
+        const maxSegmentIdx = Math.max(0, (restoredChapter?.segments.length ?? 1) - 1);
+        const restoredSegmentIdx = useSnapshot
+          ? Math.max(0, Math.min(snapshot!.segmentIndex, maxSegmentIdx))
+          : target.lastPosition.segmentIndex;
+        const restoredOffsetSeconds = useSnapshot
+          ? snapshot!.offsetSeconds
+          : target.lastPosition.offsetSeconds ?? 0;
+
         pendingRestorePositionRef.current = {
           bookId: target.id,
-          chapterIndex: target.lastPosition.chapterIndex,
-          segmentIndex: target.lastPosition.segmentIndex,
+          chapterIndex: restoredChapterIdx,
+          segmentIndex: restoredSegmentIdx,
+          offsetSeconds: restoredOffsetSeconds,
           autoPlay: false,
         };
         sessionRef.current = target.session;
         setSession(target.session);
         setBookmarks(target.bookmarks);
-        setActiveChapterIndex(target.lastPosition.chapterIndex);
+        setActiveChapterIndex(restoredChapterIdx);
         setDraftTitle(target.session.title);
         setDraftText(buildDraftPreview(target.session));
+      } else {
+        setIsFullscreenListening(false);
       }
 
       hasHydratedStorageRef.current = true;
@@ -243,6 +287,10 @@ export default function App() {
       }
     };
   }, []);
+
+  useEffect(() => {
+    writeSavedFullscreenPreference(isFullscreenListening);
+  }, [isFullscreenListening]);
 
   useEffect(() => {
     let cancelled = false;
@@ -444,7 +492,7 @@ export default function App() {
     },
   });
 
-  // Apply restored stop position (chapter + segment) or autoplay after a book session mounts
+  // Apply restored stop position (chapter + segment + exact second) or autoplay after a book session mounts
   useEffect(() => {
     if (!session || session.chapters.length === 0) return;
 
@@ -454,7 +502,8 @@ export default function App() {
       audio.jumpToLocation(
         pendingRestore.chapterIndex,
         pendingRestore.segmentIndex,
-        pendingRestore.autoPlay
+        pendingRestore.autoPlay,
+        pendingRestore.offsetSeconds
       );
       return;
     }
@@ -464,6 +513,57 @@ export default function App() {
       void audio.play(0, 0);
     }
   }, [audio, session]);
+
+  const persistedOffsetSeconds =
+    audio.transportState === 'playing'
+      ? Math.floor(audio.segmentCurrentTime)
+      : Math.round(audio.segmentCurrentTime * 10) / 10;
+
+  // Keep a synchronous resume snapshot in localStorage so even an abrupt reload (Cmd+R) mid-sentence
+  // restores the exact chapter, segment, and second.
+  useEffect(() => {
+    if (!hasHydratedStorageRef.current || !session) return;
+    if (
+      pendingRestorePositionRef.current &&
+      pendingRestorePositionRef.current.bookId === session.id
+    ) {
+      return;
+    }
+
+    saveResumePositionSnapshot(session.id, {
+      chapterIndex: activeChapterIndex,
+      segmentIndex: audio.activeSegmentIndex,
+      offsetSeconds: persistedOffsetSeconds,
+    });
+  }, [session, activeChapterIndex, audio.activeSegmentIndex, persistedOffsetSeconds]);
+
+  useEffect(() => {
+    if (!session) return;
+
+    const flushExactResumePosition = () => {
+      if (!hasHydratedStorageRef.current || !sessionRef.current) return;
+      saveResumePositionSnapshot(sessionRef.current.id, {
+        chapterIndex: activeChapterIndex,
+        segmentIndex: audio.activeSegmentIndex,
+        offsetSeconds: audio.getLiveOffsetSeconds(),
+      });
+    };
+
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === 'hidden') {
+        flushExactResumePosition();
+      }
+    };
+
+    window.addEventListener('pagehide', flushExactResumePosition);
+    window.addEventListener('beforeunload', flushExactResumePosition);
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+    return () => {
+      window.removeEventListener('pagehide', flushExactResumePosition);
+      window.removeEventListener('beforeunload', flushExactResumePosition);
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
+    };
+  }, [session, activeChapterIndex, audio.activeSegmentIndex, audio.getLiveOffsetSeconds]);
 
   // Continuously persist active book text, bookmarks, and automatic stop position in browser IndexedDB (never MP3s)
   useEffect(() => {
@@ -476,6 +576,7 @@ export default function App() {
       return;
     }
 
+    const delayMs = audio.transportState === 'playing' ? 450 : 80;
     const timer = window.setTimeout(() => {
       const existing = savedBooksRef.current.find((b) => b.id === session.id);
       const record = createSavedBookRecord({
@@ -483,6 +584,7 @@ export default function App() {
         bookmarks,
         chapterIndex: activeChapterIndex,
         segmentIndex: audio.activeSegmentIndex,
+        offsetSeconds: persistedOffsetSeconds,
         existingSavedAt: existing?.savedAt,
       });
 
@@ -505,10 +607,17 @@ export default function App() {
           // Storage quota exceeded or unavailable; keep running smoothly in RAM
         }
       })();
-    }, 80);
+    }, delayMs);
 
     return () => window.clearTimeout(timer);
-  }, [session, bookmarks, activeChapterIndex, audio.activeSegmentIndex]);
+  }, [
+    session,
+    bookmarks,
+    activeChapterIndex,
+    audio.activeSegmentIndex,
+    audio.transportState,
+    persistedOffsetSeconds,
+  ]);
 
   const activeChapter = session?.chapters[activeChapterIndex] ?? null;
   const activeSavedBook = session
@@ -750,7 +859,7 @@ export default function App() {
     if (autoPlay) {
       void audio.play(chapterIndex, 0);
     } else {
-      audio.stop();
+      audio.jumpToLocation(chapterIndex, 0, false, 0);
       const target = currentSession.chapters[chapterIndex];
       if (target?.translationStatus === 'needs_translation' && autoTranslateRef.current) {
         void translateChapter(chapterIndex).catch((err) => {
@@ -823,7 +932,8 @@ export default function App() {
       audio.jumpToLocation(
         book.lastPosition.chapterIndex,
         book.lastPosition.segmentIndex,
-        autoPlay
+        autoPlay,
+        book.lastPosition.offsetSeconds ?? 0
       );
       document
         .getElementById(autoPlay ? 'lecteur' : 'liseuse')
@@ -839,6 +949,7 @@ export default function App() {
       bookId: book.id,
       chapterIndex: book.lastPosition.chapterIndex,
       segmentIndex: book.lastPosition.segmentIndex,
+      offsetSeconds: book.lastPosition.offsetSeconds ?? 0,
       autoPlay,
     };
 
@@ -861,7 +972,8 @@ export default function App() {
     audio.jumpToLocation(
       activeSavedBook.lastPosition.chapterIndex,
       activeSavedBook.lastPosition.segmentIndex,
-      autoPlay
+      autoPlay,
+      activeSavedBook.lastPosition.offsetSeconds ?? 0
     );
     document
       .getElementById(autoPlay ? 'lecteur' : 'liseuse')
@@ -869,6 +981,7 @@ export default function App() {
   };
 
   const handleDeleteSavedBook = async (bookId: string) => {
+    clearResumePositionSnapshot(bookId);
     try {
       await deleteSavedBook(bookId);
     } catch {
@@ -895,6 +1008,7 @@ export default function App() {
           bookId: nextBook.id,
           chapterIndex: nextBook.lastPosition.chapterIndex,
           segmentIndex: nextBook.lastPosition.segmentIndex,
+          offsetSeconds: nextBook.lastPosition.offsetSeconds ?? 0,
           autoPlay: false,
         };
         sessionRef.current = nextBook.session;
@@ -921,6 +1035,7 @@ export default function App() {
   };
 
   const handleClearAllStorage = async () => {
+    clearResumePositionSnapshot();
     exportAbortRef.current?.abort();
     exportAbortRef.current = null;
     importAbortRef.current?.abort();
