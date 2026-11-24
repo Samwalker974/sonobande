@@ -1,8 +1,10 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import * as vits from '@diffusionstudio/vits-web';
 import { BookLibrary } from './components/BookLibrary';
 import { ChapterList } from './components/ChapterList';
 import { ChapterReader } from './components/ChapterReader';
+import { FullscreenListeningView } from './components/FullscreenListeningView';
+import { GlobalProgressBar } from './components/GlobalProgressBar';
 import { TextStudio } from './components/TextStudio';
 import { TopBar } from './components/TopBar';
 import { WalkmanDeck } from './components/WalkmanDeck';
@@ -15,17 +17,14 @@ import type {
   BrowserStorageMetrics,
   ChapterItem,
   ExportProgress,
+  GlobalTaskProgress,
   NeuralVoiceId,
   ReadyMp3Download,
   SampleScript,
   SavedBookRecord,
   TranslationProgress,
 } from './types/walkman';
-import {
-  DEFAULT_PAUSE_DURATION_SECONDS,
-  insertSilenceAtOffsets,
-  processAudioSpeedPitch,
-} from './utils/audioDsp';
+import { DEFAULT_PAUSE_DURATION_SECONDS } from './utils/audioDsp';
 import {
   applyChapterTranslation,
   buildChaptersFromRawText,
@@ -42,7 +41,11 @@ import {
   saveBookRecord,
   setLastActiveBookId,
 } from './utils/bookStorage';
-import { importDocumentFile } from './utils/documentParser';
+import { createBrowserMp3Session, type BrowserMp3Session } from './utils/browserMp3';
+import {
+  importDocumentFile,
+  type DocumentImportProgress,
+} from './utils/documentParser';
 import {
   getDocumentTextSizeError,
   MAX_AUTO_SAVED_DOCUMENT_CHARS,
@@ -55,11 +58,16 @@ import {
 } from './utils/languageDetect';
 import {
   createMp3ObjectUrl,
-  IncrementalMp3Builder,
   triggerDownloadFromObjectUrl,
 } from './utils/mp3Encoder';
 import { translateInBrowser } from './utils/browserTranslation';
 import { purgeLegacyLocalData } from './utils/privacyCleanup';
+
+const EXPORT_STEPS = [
+  { id: 1, label: 'Traduction' },
+  { id: 2, label: 'Voix & Audio' },
+  { id: 3, label: 'Fichier MP3' },
+];
 
 const INITIAL_STORAGE_METRICS: BrowserStorageMetrics = {
   booksCount: 0,
@@ -76,18 +84,25 @@ function buildDraftPreview(bookSession: BookSession): string {
     : bookSession.chapters.map((c) => `${c.sourceTitle}\n\n${c.sourceText}`).join('\n\n');
 }
 
-async function isVoiceModelCached(voiceId: NeuralVoiceId): Promise<boolean> {
-  if (window.localStorage.getItem(`sonobande:voice:${voiceId}:installed`) === 'true') {
-    return true;
-  }
+const MIN_VALID_ONNX_BYTES = 1_000_000;
+const MIN_VALID_JSON_BYTES = 100;
 
+async function isVoiceModelCached(voiceId: NeuralVoiceId): Promise<boolean> {
   if (!navigator.storage?.getDirectory) return false;
 
   try {
     const originDirectory = await navigator.storage.getDirectory();
     const piperDirectory = await originDirectory.getDirectoryHandle('piper');
-    await piperDirectory.getFileHandle(`${voiceId}.onnx`);
-    await piperDirectory.getFileHandle(`${voiceId}.onnx.json`);
+    const onnxHandle = await piperDirectory.getFileHandle(`${voiceId}.onnx`);
+    const jsonHandle = await piperDirectory.getFileHandle(`${voiceId}.onnx.json`);
+    const [onnxFile, jsonFile] = await Promise.all([
+      onnxHandle.getFile(),
+      jsonHandle.getFile(),
+    ]);
+    if (onnxFile.size < MIN_VALID_ONNX_BYTES || jsonFile.size < MIN_VALID_JSON_BYTES) {
+      return false;
+    }
+    JSON.parse(await jsonFile.text());
     return true;
   } catch {
     return false;
@@ -96,11 +111,11 @@ async function isVoiceModelCached(voiceId: NeuralVoiceId): Promise<boolean> {
 
 async function waitForVoiceModelCache(
   voiceId: NeuralVoiceId,
-  attempts = 30
+  attempts = 60
 ): Promise<boolean> {
   for (let attempt = 0; attempt < attempts; attempt++) {
     if (await isVoiceModelCached(voiceId)) return true;
-    await new Promise((resolve) => window.setTimeout(resolve, 250));
+    await new Promise((resolve) => window.setTimeout(resolve, 350));
   }
   return false;
 }
@@ -146,9 +161,10 @@ export default function App() {
   const [volume, setVolume] = useState<number>(0.88);
   const [muted, setMuted] = useState<boolean>(false);
 
-  // Import, errors & MP3 export progress
+  // Import, errors, fullscreen listening & MP3 export progress
+  const [isFullscreenListening, setIsFullscreenListening] = useState(false);
   const [isImportingFile, setIsImportingFile] = useState(false);
-  const [importStatusLabel, setImportStatusLabel] = useState<string | null>(null);
+  const [importProgress, setImportProgress] = useState<DocumentImportProgress | null>(null);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [exportProgress, setExportProgress] = useState<ExportProgress | null>(null);
   const [exportSuccessMessage, setExportSuccessMessage] = useState<string | null>(null);
@@ -164,7 +180,9 @@ export default function App() {
   autoTranslateRef.current = autoTranslateToFrench;
 
   const exportAbortRef = useRef<AbortController | null>(null);
+  const importAbortRef = useRef<AbortController | null>(null);
   const translationAbortRef = useRef<AbortController | null>(null);
+  const singleTranslationControllersRef = useRef<Set<AbortController>>(new Set());
   const inflightTranslationsRef = useRef<Map<string, Promise<ChapterItem>>>(new Map());
   const pendingAutoPlayRef = useRef<boolean>(false);
   const hasHydratedStorageRef = useRef<boolean>(false);
@@ -299,9 +317,15 @@ export default function App() {
         return updated;
       });
 
+      const ownController = signal ? null : new AbortController();
+      const effectiveSignal = signal ?? ownController?.signal;
+      if (ownController) {
+        singleTranslationControllersRef.current.add(ownController);
+      }
+
       const task = (async (): Promise<ChapterItem> => {
         const payload = await translateInBrowser(target.sourceTitle, target.sourceText, {
-          signal,
+          signal: effectiveSignal,
           onProgress: setBrowserTranslationStatus,
         });
 
@@ -366,6 +390,9 @@ export default function App() {
         });
         throw err;
       } finally {
+        if (ownController) {
+          singleTranslationControllersRef.current.delete(ownController);
+        }
         setBrowserTranslationStatus(null);
         inflightTranslationsRef.current.delete(inflightKey);
       }
@@ -407,6 +434,7 @@ export default function App() {
     pauseDurationSeconds,
     volume,
     muted,
+    suspendVisualMeter: isFullscreenListening,
     onChapterIndexChange: (nextIdx) => {
       setActiveChapterIndex(nextIdx);
     },
@@ -518,10 +546,18 @@ export default function App() {
       findDuplicateBookmark(bookmarks, activeChapterIndex, audio.activeSegmentIndex)
   );
 
+  const abortAllTranslations = useCallback(() => {
+    translationAbortRef.current?.abort();
+    translationAbortRef.current = null;
+    for (const controller of singleTranslationControllersRef.current) {
+      controller.abort();
+    }
+    singleTranslationControllersRef.current.clear();
+  }, []);
+
   const mountNewSession = useCallback(
     (nextSession: BookSession, autoPlay: boolean) => {
-      translationAbortRef.current?.abort();
-      translationAbortRef.current = null;
+      abortAllTranslations();
       inflightTranslationsRef.current.clear();
       setTranslationProgress(null);
       setBookmarks([]);
@@ -543,19 +579,27 @@ export default function App() {
         });
       }
     },
-    [translateChapter]
+    [abortAllTranslations, translateChapter]
   );
 
   const handleImportFile = async (file: File) => {
+    importAbortRef.current?.abort();
+    const ac = new AbortController();
+    importAbortRef.current = ac;
+
     setErrorMessage(null);
     setExportSuccessMessage(null);
     setIsImportingFile(true);
-    setImportStatusLabel(`Lecture de ${file.name}…`);
+    setImportProgress({ label: `Lecture de ${file.name}…` });
 
     try {
-      const nextSession = await importDocumentFile(file, (label) => {
-        setImportStatusLabel(label);
-      });
+      const nextSession = await importDocumentFile(
+        file,
+        (progress) => {
+          setImportProgress(progress);
+        },
+        ac.signal
+      );
       setDraftTitle(nextSession.title);
       const fullPreview =
         nextSession.totalChars > 60000
@@ -564,12 +608,17 @@ export default function App() {
       setDraftText(fullPreview);
       mountNewSession(nextSession, false);
     } catch (err) {
-      setErrorMessage(
-        err instanceof Error ? err.message : "Impossible d'importer ce fichier."
-      );
+      if (!(err instanceof Error && err.name === 'AbortError')) {
+        setErrorMessage(
+          err instanceof Error ? err.message : "Impossible d'importer ce fichier."
+        );
+      }
     } finally {
+      if (importAbortRef.current === ac) {
+        importAbortRef.current = null;
+      }
       setIsImportingFile(false);
-      setImportStatusLabel(null);
+      setImportProgress(null);
     }
   };
 
@@ -782,8 +831,7 @@ export default function App() {
       return;
     }
 
-    translationAbortRef.current?.abort();
-    translationAbortRef.current = null;
+    abortAllTranslations();
     inflightTranslationsRef.current.clear();
     setTranslationProgress(null);
 
@@ -834,8 +882,7 @@ export default function App() {
     if (sessionRef.current?.id === bookId) {
       exportAbortRef.current?.abort();
       exportAbortRef.current = null;
-      translationAbortRef.current?.abort();
-      translationAbortRef.current = null;
+      abortAllTranslations();
       inflightTranslationsRef.current.clear();
       audio.clearAudioMemory();
       setTranslationProgress(null);
@@ -858,6 +905,7 @@ export default function App() {
         setDraftText(buildDraftPreview(nextBook.session));
         void setLastActiveBookId(nextBook.id);
       } else {
+        setIsFullscreenListening(false);
         sessionRef.current = null;
         setSession(null);
         setBookmarks([]);
@@ -875,10 +923,12 @@ export default function App() {
   const handleClearAllStorage = async () => {
     exportAbortRef.current?.abort();
     exportAbortRef.current = null;
-    translationAbortRef.current?.abort();
-    translationAbortRef.current = null;
+    importAbortRef.current?.abort();
+    importAbortRef.current = null;
+    abortAllTranslations();
     inflightTranslationsRef.current.clear();
     pendingRestorePositionRef.current = null;
+    setIsFullscreenListening(false);
     audio.clearAudioMemory();
     sessionRef.current = null;
     setSession(null);
@@ -955,6 +1005,7 @@ export default function App() {
     replaceReadyMp3(null);
 
     const voiceLabel = getNeuralVoiceById(neuralVoiceId).name;
+    let mp3Session: BrowserMp3Session | null = null;
 
     try {
       // Step 1/3: Prepare & translate untranslated or currently-translating English chapters
@@ -1038,8 +1089,6 @@ export default function App() {
       });
 
       const directMp3Chunks: Uint8Array[] = [];
-      let builder: IncrementalMp3Builder | null = null;
-      let sampleRate = 24000;
       let completed = 0;
 
       for (let chIdx = 0; chIdx < preparedChapters.length; chIdx++) {
@@ -1074,7 +1123,7 @@ export default function App() {
             setExportProgress({
               scope,
               stage: 'encoding',
-              stageHeadline: 'Étape 2/3 · Encodage MP3 & réglage audio',
+              stageHeadline: 'Étape 2/3 · Encodage MP3 en arrière-plan',
               detail: `Conversion MP3 128 kbps · ${segDetail}`,
               label: `Encodage MP3 — ${segDetail}`,
               completedSegments: completed,
@@ -1083,36 +1132,37 @@ export default function App() {
               totalSteps: 3,
             });
 
-            const decoded = await audio.decodeAudioToMonoPcm(segAudio);
-            sampleRate = decoded.sampleRate;
-
-            if (!builder) {
-              builder = new IncrementalMp3Builder(sampleRate, 128);
+            if (!mp3Session) {
+              mp3Session = await createBrowserMp3Session({
+                bitrateKbps: 128,
+                signal: ac.signal,
+              });
             }
 
-            const shaped = processAudioSpeedPitch(
-              decoded.samples,
-              sampleRate,
+            const dspOptions = {
+              pauseOffsets: segAudio.pauseOffsets,
               speed,
-              pitchSemitones
-            );
-            const shapedWithPauses = insertSilenceAtOffsets(
-              shaped,
-              decoded.samples.length,
-              decoded.pauseOffsets,
-              sampleRate,
+              pitchSemitones,
               pauseDurationSeconds,
-              segIdx + 1 < chapter.segments.length
-            );
-            builder.appendSamples(shapedWithPauses, sampleRate);
+              includeEndPause: segIdx + 1 < chapter.segments.length,
+            };
+
+            if (segAudio.mimeType === 'audio/wav') {
+              await mp3Session.appendWav(segAudio.rawBytes, dspOptions);
+            } else {
+              const decoded = await audio.decodeAudioToMonoPcm(segAudio);
+              await mp3Session.appendPcm(decoded.samples, decoded.sampleRate, {
+                ...dspOptions,
+                pauseOffsets: decoded.pauseOffsets,
+              });
+            }
           }
 
           completed++;
-          await new Promise((resolve) => setTimeout(resolve, 0));
         }
 
-        if (builder && chIdx < preparedChapters.length - 1) {
-          builder.appendSilence(0.7);
+        if (mp3Session && chIdx < preparedChapters.length - 1) {
+          await mp3Session.appendSilence(0.7);
         }
       }
 
@@ -1122,7 +1172,7 @@ export default function App() {
           : `${currentSession.title}-integral`;
       const filename = sanitizeMp3Filename(baseName);
 
-      // Step 3/3: Package final MP3 file in RAM (never persisted in browser storage)
+      // Step 3/3: Package final MP3 file in worker RAM (never persisted in browser storage)
       setExportProgress({
         scope,
         stage: 'packaging',
@@ -1134,10 +1184,9 @@ export default function App() {
         stepIndex: 3,
         totalSteps: 3,
       });
-      await new Promise((resolve) => setTimeout(resolve, 60));
 
       let mp3Bytes: Uint8Array;
-      if (canFastConcatNeuralMp3 && directMp3Chunks.length > 0 && !builder) {
+      if (canFastConcatNeuralMp3 && directMp3Chunks.length > 0 && !mp3Session) {
         const totalLen = directMp3Chunks.reduce((sum, c) => sum + c.length, 0);
         mp3Bytes = new Uint8Array(totalLen);
         let offset = 0;
@@ -1145,8 +1194,8 @@ export default function App() {
           mp3Bytes.set(chunk, offset);
           offset += chunk.length;
         }
-      } else if (builder) {
-        mp3Bytes = builder.finalize();
+      } else if (mp3Session) {
+        mp3Bytes = await mp3Session.finalize();
       } else {
         throw new Error('Aucun audio généré pour cet export.');
       }
@@ -1168,6 +1217,7 @@ export default function App() {
         // Fallback: user can click the visible "Télécharger le MP3" button directly
       }
     } catch (err) {
+      mp3Session?.cancel();
       if (err instanceof Error && err.name === 'AbortError') {
         setExportSuccessMessage('Export MP3 annulé.');
       } else {
@@ -1182,8 +1232,100 @@ export default function App() {
     }
   };
 
+  const translatingChapterLabels = useMemo(
+    () =>
+      session?.chapters.flatMap((chapter, index) =>
+        chapter.translationStatus === 'translating' ? [`Chapitre ${index + 1}`] : []
+      ) ?? [],
+    [session]
+  );
+
   const isActiveChapterTranslating =
     activeChapter?.translationStatus === 'translating' || Boolean(translationProgress);
+
+  const activeGlobalTask = useMemo<{
+    task: GlobalTaskProgress;
+    onCancel: () => void;
+  } | null>(() => {
+    if (exportProgress) {
+      return {
+        task: {
+          kind: 'export',
+          stage: exportProgress.stage,
+          headline: exportProgress.stageHeadline,
+          detail:
+            exportProgress.stage === 'translating' && browserTranslationStatus
+              ? `${exportProgress.detail} · ${browserTranslationStatus}`
+              : exportProgress.detail,
+          completed: exportProgress.completedSegments,
+          total: Math.max(1, exportProgress.totalSegments),
+          steps: EXPORT_STEPS,
+          activeStepIndex: exportProgress.stepIndex,
+          cancelLabel: 'Annuler',
+        },
+        onCancel: () => exportAbortRef.current?.abort(),
+      };
+    }
+
+    if (translationProgress) {
+      return {
+        task: {
+          kind: 'translation',
+          headline: translationProgress.currentLabel,
+          detail:
+            browserTranslationStatus ||
+            'Traduction locale en français dans un worker dédié…',
+          completed: translationProgress.completedChapters,
+          total: Math.max(1, translationProgress.totalChapters),
+          cancelLabel: 'Annuler',
+        },
+        onCancel: abortAllTranslations,
+      };
+    }
+
+    if (translatingChapterLabels.length > 0) {
+      return {
+        task: {
+          kind: 'translation',
+          headline: `Traduction EN → FR — ${translatingChapterLabels.join(', ')}`,
+          detail:
+            browserTranslationStatus ||
+            'Traduction locale dans le navigateur (sans appel externe)…',
+          percent: null,
+          cancelLabel: 'Annuler',
+        },
+        onCancel: abortAllTranslations,
+      };
+    }
+
+    if (isImportingFile) {
+      return {
+        task: {
+          kind: 'import',
+          headline: 'Import du document en cours',
+          detail: importProgress?.label || 'Lecture locale du fichier…',
+          completed: importProgress?.completed,
+          total: importProgress?.total,
+          percent:
+            importProgress?.completed && importProgress?.total
+              ? Math.round((importProgress.completed / importProgress.total) * 100)
+              : null,
+          cancelLabel: 'Annuler',
+        },
+        onCancel: () => importAbortRef.current?.abort(),
+      };
+    }
+
+    return null;
+  }, [
+    abortAllTranslations,
+    browserTranslationStatus,
+    exportProgress,
+    importProgress,
+    isImportingFile,
+    translatingChapterLabels,
+    translationProgress,
+  ]);
 
   const handleDownloadVoiceModel = async () => {
     if (!supportsVoiceModelStorage()) {
@@ -1294,174 +1436,253 @@ export default function App() {
         </div>
       )}
 
-      <TopBar
-        storageMetrics={storageMetrics}
-        hasAnyData={Boolean(savedBooks.length > 0 || session || draftText.trim())}
-        onClearAllStorage={handleClearAllStorage}
-      />
+      {isFullscreenListening ? (
+        <>
+          {activeGlobalTask && (
+            <GlobalProgressBar
+              task={activeGlobalTask.task}
+              onCancel={activeGlobalTask.onCancel}
+              darkSurface
+            />
+          )}
+          <FullscreenListeningView
+            session={session}
+            activeChapter={activeChapter}
+            activeChapterIndex={activeChapterIndex}
+            transportState={audio.transportState}
+            activeSegmentIndex={audio.activeSegmentIndex}
+            totalSegmentsInChapter={audio.totalSegmentsInChapter}
+            segmentCurrentTime={audio.segmentCurrentTime}
+            segmentDuration={audio.segmentDuration}
+            chapterProgressRatio={audio.chapterProgressRatio}
+            speed={speed}
+            pitchSemitones={pitchSemitones}
+            pauseDurationSeconds={pauseDurationSeconds}
+            volume={volume}
+            muted={muted}
+            isExporting={Boolean(exportProgress)}
+            isTranslating={isActiveChapterTranslating}
+            isCurrentSegmentBookmarked={isCurrentSegmentBookmarked}
+            errorMessage={errorMessage}
+            onExitFullscreen={() => setIsFullscreenListening(false)}
+            onPlay={() => void audio.play()}
+            onPause={audio.pause}
+            onStop={audio.stop}
+            onRewind={audio.rewind}
+            onFastForward={audio.fastForward}
+            onPrevChapter={() => handleSelectChapter(activeChapterIndex - 1, true)}
+            onNextChapter={() => handleSelectChapter(activeChapterIndex + 1, true)}
+            onPrevSegment={() =>
+              audio.jumpToSegment(
+                Math.max(0, audio.activeSegmentIndex - 1),
+                audio.transportState === 'playing'
+              )
+            }
+            onNextSegment={() =>
+              audio.jumpToSegment(
+                Math.min(
+                  Math.max(0, audio.totalSegmentsInChapter - 1),
+                  audio.activeSegmentIndex + 1
+                ),
+                audio.transportState === 'playing'
+              )
+            }
+            onSeekSegment={audio.seekSegment}
+            onSpeedChange={(s) => setSpeed(Math.round(s * 100) / 100)}
+            onPitchChange={(p) => setPitchSemitones(Math.round(p * 10) / 10)}
+            onPauseDurationChange={setPauseDurationSeconds}
+            onResetTuning={() => {
+              setSpeed(1.0);
+              setPitchSemitones(0);
+              setPauseDurationSeconds(DEFAULT_PAUSE_DURATION_SECONDS);
+            }}
+            onVolumeChange={(v) => {
+              setVolume(v);
+              if (v > 0 && muted) setMuted(false);
+            }}
+            onToggleMute={() => setMuted((m) => !m)}
+            onAddBookmark={() => handleAddBookmark()}
+            onTranslateActiveChapter={() => void handleTranslateSingleChapter(activeChapterIndex)}
+          />
+        </>
+      ) : (
+        <>
+          <TopBar
+            storageMetrics={storageMetrics}
+            hasAnyData={Boolean(savedBooks.length > 0 || session || draftText.trim())}
+            hasBook={Boolean(session && activeChapter)}
+            onEnterFullscreen={() => setIsFullscreenListening(true)}
+            onClearAllStorage={handleClearAllStorage}
+          />
 
-      <WalkmanQuickControls
-        hasBook={Boolean(session && activeChapter)}
-        isPlaying={audio.transportState === 'playing'}
-        isBuffering={audio.transportState === 'buffering'}
-        isExporting={Boolean(exportProgress)}
-        canGoPrevious={activeChapterIndex > 0}
-        canGoNext={activeChapterIndex < (session?.chapters.length ?? 0) - 1}
-        onPlay={() => void audio.play()}
-        onPause={audio.pause}
-        onStop={audio.stop}
-        onRewind={audio.rewind}
-        onFastForward={audio.fastForward}
-        onPrevChapter={() => handleSelectChapter(activeChapterIndex - 1, true)}
-        onNextChapter={() => handleSelectChapter(activeChapterIndex + 1, true)}
-      />
+          {activeGlobalTask && (
+            <GlobalProgressBar
+              task={activeGlobalTask.task}
+              onCancel={activeGlobalTask.onCancel}
+            />
+          )}
 
-      <main className="mx-auto max-w-[1280px] space-y-6 px-4 pt-5 pb-28 sm:px-6 sm:pt-7 md:space-y-8 md:px-8 md:pt-9 md:pb-9 md:pr-20">
-        <div className="grid grid-cols-1 items-stretch gap-5 sm:gap-7 lg:grid-cols-12">
-          <div className="order-2 min-w-0 lg:order-1 lg:col-span-6 xl:col-span-5">
-            <WalkmanDeck
+          <WalkmanQuickControls
+            hasBook={Boolean(session && activeChapter)}
+            isPlaying={audio.transportState === 'playing'}
+            isBuffering={audio.transportState === 'buffering'}
+            isExporting={Boolean(exportProgress)}
+            canGoPrevious={activeChapterIndex > 0}
+            canGoNext={activeChapterIndex < (session?.chapters.length ?? 0) - 1}
+            onPlay={() => void audio.play()}
+            onPause={audio.pause}
+            onStop={audio.stop}
+            onRewind={audio.rewind}
+            onFastForward={audio.fastForward}
+            onPrevChapter={() => handleSelectChapter(activeChapterIndex - 1, true)}
+            onNextChapter={() => handleSelectChapter(activeChapterIndex + 1, true)}
+            onEnterFullscreen={() => setIsFullscreenListening(true)}
+          />
+
+          <main className="mx-auto max-w-[1280px] space-y-6 px-4 pt-5 pb-28 sm:px-6 sm:pt-7 md:space-y-8 md:px-8 md:pt-9 md:pb-9 md:pr-20">
+            <div className="grid grid-cols-1 items-stretch gap-5 sm:gap-7 lg:grid-cols-12">
+              <div className="order-2 min-w-0 lg:order-1 lg:col-span-6 xl:col-span-5">
+                <WalkmanDeck
+                  session={session}
+                  activeChapter={activeChapter}
+                  activeChapterIndex={activeChapterIndex}
+                  neuralVoiceId={neuralVoiceId}
+                  transportState={audio.transportState}
+                  activeSegmentIndex={audio.activeSegmentIndex}
+                  totalSegmentsInChapter={audio.totalSegmentsInChapter}
+                  segmentCurrentTime={audio.segmentCurrentTime}
+                  segmentDuration={audio.segmentDuration}
+                  chapterProgressRatio={audio.chapterProgressRatio}
+                  vuLevel={audio.vuLevel}
+                  speed={speed}
+                  pitchSemitones={pitchSemitones}
+                  pauseDurationSeconds={pauseDurationSeconds}
+                  volume={volume}
+                  muted={muted}
+                  isExporting={Boolean(exportProgress)}
+                  exportSuccessMessage={exportSuccessMessage}
+                  exportErrorMessage={exportErrorMessage}
+                  readyMp3={readyMp3}
+                  hasDraftText={draftText.trim().length > 0}
+                  isTranslating={isActiveChapterTranslating}
+                  isCurrentSegmentBookmarked={isCurrentSegmentBookmarked}
+                  onPlay={() => void audio.play()}
+                  onPause={audio.pause}
+                  onStop={audio.stop}
+                  onRewind={audio.rewind}
+                  onFastForward={audio.fastForward}
+                  onPrevChapter={() => handleSelectChapter(activeChapterIndex - 1, true)}
+                  onNextChapter={() => handleSelectChapter(activeChapterIndex + 1, true)}
+                  onSeekSegment={audio.seekSegment}
+                  onSpeedChange={(s) => setSpeed(Math.round(s * 100) / 100)}
+                  onPitchChange={(p) => setPitchSemitones(Math.round(p * 10) / 10)}
+                  onPauseDurationChange={setPauseDurationSeconds}
+                  onResetTuning={() => {
+                    setSpeed(1.0);
+                    setPitchSemitones(0);
+                    setPauseDurationSeconds(DEFAULT_PAUSE_DURATION_SECONDS);
+                  }}
+                  onVolumeChange={(v) => {
+                    setVolume(v);
+                    if (v > 0 && muted) setMuted(false);
+                  }}
+                  onToggleMute={() => setMuted((m) => !m)}
+                  onAddBookmark={() => handleAddBookmark()}
+                  onEnterFullscreen={() => setIsFullscreenListening(true)}
+                  onExportChapterMp3={() => void runIncrementalMp3Export('chapter')}
+                  onExportBookMp3={() => void runIncrementalMp3Export('book')}
+                  onDismissReadyMp3={() => replaceReadyMp3(null)}
+                />
+              </div>
+
+              <div className="order-1 min-w-0 lg:order-2 lg:col-span-6 xl:col-span-7">
+                <TextStudio
+                  session={session}
+                  neuralVoiceId={neuralVoiceId}
+                  draftTitle={draftTitle}
+                  draftText={draftText}
+                  speed={speed}
+                  isImportingFile={isImportingFile}
+                  importStatusLabel={importProgress?.label ?? null}
+                  autoTranslateToFrench={autoTranslateToFrench}
+                  translationProgress={translationProgress}
+                  errorMessage={errorMessage}
+                  onDraftTitleChange={setDraftTitle}
+                  onDraftTextChange={(val) => {
+                    setDraftText(val);
+                    if (errorMessage && val.trim()) setErrorMessage(null);
+                  }}
+                  onImportFile={(file) => void handleImportFile(file)}
+                  onLoadPastedText={handleLoadPastedText}
+                  onLoadSample={handleLoadSample}
+                  onToggleAutoTranslate={() => setAutoTranslateToFrench((prev) => !prev)}
+                  onTranslateAllChapters={() => void handleTranslateAllChapters()}
+                  onClearDraft={() => {
+                    setDraftText('');
+                    setDraftTitle('');
+                    setErrorMessage(null);
+                  }}
+                />
+              </div>
+            </div>
+
+            {/* Browser Text-Only Book Library with Auto Stop-Position Resume */}
+            <BookLibrary
+              books={savedBooks}
+              activeBookId={session?.id ?? null}
+              onResumeBook={handleResumeBook}
+              onDeleteBook={(id) => void handleDeleteSavedBook(id)}
+            />
+
+            {/* Synchronized French-only Chapter Reader */}
+            <ChapterReader
               session={session}
               activeChapter={activeChapter}
               activeChapterIndex={activeChapterIndex}
-              neuralVoiceId={neuralVoiceId}
-              transportState={audio.transportState}
               activeSegmentIndex={audio.activeSegmentIndex}
-              totalSegmentsInChapter={audio.totalSegmentsInChapter}
-              segmentCurrentTime={audio.segmentCurrentTime}
-              segmentDuration={audio.segmentDuration}
-              chapterProgressRatio={audio.chapterProgressRatio}
-              vuLevel={audio.vuLevel}
-              speed={speed}
-              pitchSemitones={pitchSemitones}
-              pauseDurationSeconds={pauseDurationSeconds}
-              volume={volume}
-              muted={muted}
-              exportProgress={exportProgress}
-              exportSuccessMessage={exportSuccessMessage}
-              exportErrorMessage={exportErrorMessage}
-              readyMp3={readyMp3}
-              hasDraftText={draftText.trim().length > 0}
-              isTranslating={isActiveChapterTranslating}
-              isCurrentSegmentBookmarked={isCurrentSegmentBookmarked}
-              onPlay={() => void audio.play()}
-              onPause={audio.pause}
-              onStop={audio.stop}
-              onRewind={audio.rewind}
-              onFastForward={audio.fastForward}
-              onPrevChapter={() => handleSelectChapter(activeChapterIndex - 1, true)}
-              onNextChapter={() => handleSelectChapter(activeChapterIndex + 1, true)}
-              onSeekSegment={audio.seekSegment}
-              onSpeedChange={(s) => setSpeed(Math.round(s * 100) / 100)}
-              onPitchChange={(p) => setPitchSemitones(Math.round(p * 10) / 10)}
-              onPauseDurationChange={setPauseDurationSeconds}
-              onResetTuning={() => {
-                setSpeed(1.0);
-                setPitchSemitones(0);
-                setPauseDurationSeconds(DEFAULT_PAUSE_DURATION_SECONDS);
-              }}
-              onVolumeChange={(v) => {
-                setVolume(v);
-                if (v > 0 && muted) setMuted(false);
-              }}
-              onToggleMute={() => setMuted((m) => !m)}
-              onAddBookmark={() => handleAddBookmark()}
-              onExportChapterMp3={() => void runIncrementalMp3Export('chapter')}
-              onExportBookMp3={() => void runIncrementalMp3Export('book')}
-              onCancelExport={() => exportAbortRef.current?.abort()}
-              onDismissReadyMp3={() => replaceReadyMp3(null)}
-            />
-          </div>
-
-          <div className="order-1 min-w-0 lg:order-2 lg:col-span-6 xl:col-span-7">
-            <TextStudio
-              session={session}
-              neuralVoiceId={neuralVoiceId}
-              draftTitle={draftTitle}
-              draftText={draftText}
-              speed={speed}
-              isImportingFile={isImportingFile}
-              importStatusLabel={importStatusLabel}
+              isPlaying={audio.transportState === 'playing'}
               autoTranslateToFrench={autoTranslateToFrench}
-              translationProgress={translationProgress}
-              browserTranslationStatus={browserTranslationStatus}
-              errorMessage={errorMessage}
-              onDraftTitleChange={setDraftTitle}
-              onDraftTextChange={(val) => {
-                setDraftText(val);
-                if (errorMessage && val.trim()) setErrorMessage(null);
-              }}
-              onImportFile={(file) => void handleImportFile(file)}
-              onLoadPastedText={handleLoadPastedText}
-              onLoadSample={handleLoadSample}
-              onToggleAutoTranslate={() => setAutoTranslateToFrench((prev) => !prev)}
-              onTranslateAllChapters={() => void handleTranslateAllChapters()}
-              onCancelTranslation={() => translationAbortRef.current?.abort()}
-              onClearDraft={() => {
-                setDraftText('');
-                setDraftTitle('');
-                setErrorMessage(null);
-              }}
+              bookmarks={bookmarks}
+              onTranslateChapter={(idx) => void handleTranslateSingleChapter(idx)}
+              onSelectSegment={(segIdx, autoPlay) => audio.jumpToSegment(segIdx, autoPlay)}
+              onAddBookmark={(note) => handleAddBookmark(note)}
+              onPrevChapter={() => handleSelectChapter(activeChapterIndex - 1, false)}
+              onNextChapter={() => handleSelectChapter(activeChapterIndex + 1, false)}
             />
-          </div>
-        </div>
 
-        {/* Browser Text-Only Book Library with Auto Stop-Position Resume */}
-        <BookLibrary
-          books={savedBooks}
-          activeBookId={session?.id ?? null}
-          onResumeBook={handleResumeBook}
-          onDeleteBook={(id) => void handleDeleteSavedBook(id)}
-        />
+            {/* Chapters & Bookmarks Tabs (including auto-saved stop position) */}
+            <ChapterList
+              session={session}
+              activeChapterIndex={activeChapterIndex}
+              activeSegmentIndex={audio.activeSegmentIndex}
+              isPlaying={audio.transportState === 'playing'}
+              isExporting={Boolean(exportProgress)}
+              readyMp3={readyMp3}
+              exportErrorMessage={exportErrorMessage}
+              savedPosition={activeSavedBook?.lastPosition ?? null}
+              bookmarks={bookmarks}
+              onSelectChapter={handleSelectChapter}
+              onTranslateChapter={(idx) => void handleTranslateSingleChapter(idx)}
+              onExportChapterMp3={(idx) => void runIncrementalMp3Export('chapter', idx)}
+              onExportBookMp3={() => void runIncrementalMp3Export('book')}
+              onDismissReadyMp3={() => replaceReadyMp3(null)}
+              onResumeSavedPosition={handleResumeCurrentSavedPosition}
+              onJumpToBookmark={handleJumpToBookmark}
+              onUpdateBookmarkNote={handleUpdateBookmarkNote}
+              onDeleteBookmark={handleDeleteBookmark}
+            />
+          </main>
 
-        {/* Synchronized French-only Chapter Reader */}
-        <ChapterReader
-          session={session}
-          activeChapter={activeChapter}
-          activeChapterIndex={activeChapterIndex}
-          activeSegmentIndex={audio.activeSegmentIndex}
-          isPlaying={audio.transportState === 'playing'}
-          autoTranslateToFrench={autoTranslateToFrench}
-          bookmarks={bookmarks}
-          onTranslateChapter={(idx) => void handleTranslateSingleChapter(idx)}
-          onSelectSegment={(segIdx, autoPlay) => audio.jumpToSegment(segIdx, autoPlay)}
-          onAddBookmark={(note) => handleAddBookmark(note)}
-          onPrevChapter={() => handleSelectChapter(activeChapterIndex - 1, false)}
-          onNextChapter={() => handleSelectChapter(activeChapterIndex + 1, false)}
-        />
-
-        {/* Chapters & Bookmarks Tabs (including auto-saved stop position) */}
-        <ChapterList
-          session={session}
-          activeChapterIndex={activeChapterIndex}
-          activeSegmentIndex={audio.activeSegmentIndex}
-          isPlaying={audio.transportState === 'playing'}
-          isExporting={Boolean(exportProgress)}
-          exportProgress={exportProgress}
-          readyMp3={readyMp3}
-          exportErrorMessage={exportErrorMessage}
-          savedPosition={activeSavedBook?.lastPosition ?? null}
-          bookmarks={bookmarks}
-          onSelectChapter={handleSelectChapter}
-          onTranslateChapter={(idx) => void handleTranslateSingleChapter(idx)}
-          onExportChapterMp3={(idx) => void runIncrementalMp3Export('chapter', idx)}
-          onExportBookMp3={() => void runIncrementalMp3Export('book')}
-          onCancelExport={() => exportAbortRef.current?.abort()}
-          onDismissReadyMp3={() => replaceReadyMp3(null)}
-          onResumeSavedPosition={handleResumeCurrentSavedPosition}
-          onJumpToBookmark={handleJumpToBookmark}
-          onUpdateBookmarkNote={handleUpdateBookmarkNote}
-          onDeleteBookmark={handleDeleteBookmark}
-        />
-      </main>
-
-      <footer className="mx-auto max-w-[1280px] border-t border-[#d8d3c8] pl-4 pr-[4.5rem] py-6 text-xs text-[#64676d] sm:pl-8 sm:pr-20">
-        <div className="flex flex-wrap items-center justify-between gap-2">
-          <span>
-            Sonobande — Lecteur Walkman · Bibliothèque locale (texte seul) · Traduction EN → FR
-          </span>
-          <span>Livres & reprise stockés dans le navigateur · MP3 jamais stockés</span>
-        </div>
-      </footer>
+          <footer className="mx-auto max-w-[1280px] border-t border-[#d8d3c8] pl-4 pr-[4.5rem] py-6 text-xs text-[#64676d] sm:pl-8 sm:pr-20">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <span>
+                Sonobande — Lecteur Walkman · Bibliothèque locale (texte seul) · Traduction EN → FR
+              </span>
+              <span>Livres & reprise stockés dans le navigateur · MP3 jamais stockés</span>
+            </div>
+          </footer>
+        </>
+      )}
     </div>
   );
 }

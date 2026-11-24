@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import {
+  disposeVoiceWorker,
   synthesizeInBrowser,
   type VoiceWorkerRequest,
   type VoiceWorkerResponse,
@@ -61,6 +62,51 @@ test('synthesizeInBrowser returns audio, forwards worker errors, and supports ca
       ['synthesize', 'synthesize', 'synthesize', 'cancel']
     );
   } finally {
+    disposeVoiceWorker();
+    Reflect.set(globalThis, 'Worker', originalWorker);
+  }
+});
+
+test('synthesizeInBrowser recycles the voice worker periodically to avoid WASM memory growth', async () => {
+  disposeVoiceWorker();
+  let createdWorkers = 0;
+  let terminatedWorkers = 0;
+
+  const originalWorker = globalThis.Worker;
+  Reflect.set(globalThis, 'Worker', function WorkerStub() {
+    createdWorkers++;
+    const worker = {
+      onmessage: null as ((event: MessageEvent<VoiceWorkerResponse>) => void) | null,
+      onerror: null as ((event: ErrorEvent) => void) | null,
+      onmessageerror: null as (() => void) | null,
+      postMessage(message: VoiceWorkerRequest) {
+        if (message.type !== 'synthesize') return;
+        queueMicrotask(() => {
+          worker.onmessage?.(
+            new MessageEvent('message', {
+              data: { type: 'result', id: message.id, audio: new Blob(['ok']) },
+            })
+          );
+        });
+      },
+      terminate() {
+        terminatedWorkers++;
+      },
+    };
+    return worker;
+  });
+
+  try {
+    for (let i = 0; i < 9; i++) {
+      const blob = await synthesizeInBrowser(`phrase ${i}`, 'fr_FR-siwis-medium');
+      assert.equal(await blob.text(), 'ok');
+    }
+    assert.ok(
+      terminatedWorkers >= 1 && createdWorkers >= 2,
+      `Expected worker recycle after batch, got created=${createdWorkers}, terminated=${terminatedWorkers}`
+    );
+  } finally {
+    disposeVoiceWorker();
     Reflect.set(globalThis, 'Worker', originalWorker);
   }
 });

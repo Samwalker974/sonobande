@@ -7,7 +7,6 @@ import {
   Loader2,
   Play,
   ShieldCheck,
-  X,
 } from 'lucide-react';
 import { useRef, useState } from 'react';
 import {
@@ -33,7 +32,6 @@ interface TextStudioProps {
   importStatusLabel: string | null;
   autoTranslateToFrench: boolean;
   translationProgress: TranslationProgress | null;
-  browserTranslationStatus: string | null;
   errorMessage: string | null;
   onDraftTitleChange: (title: string) => void;
   onDraftTextChange: (text: string) => void;
@@ -42,7 +40,6 @@ interface TextStudioProps {
   onLoadSample: (sample: SampleScript) => void;
   onToggleAutoTranslate: () => void;
   onTranslateAllChapters: () => void;
-  onCancelTranslation: () => void;
   onClearDraft: () => void;
 }
 
@@ -56,7 +53,6 @@ export function TextStudio({
   importStatusLabel,
   autoTranslateToFrench,
   translationProgress,
-  browserTranslationStatus,
   errorMessage,
   onDraftTitleChange,
   onDraftTextChange,
@@ -65,7 +61,6 @@ export function TextStudio({
   onLoadSample,
   onToggleAutoTranslate,
   onTranslateAllChapters,
-  onCancelTranslation,
   onClearDraft,
 }: TextStudioProps) {
   const fileInputRef = useRef<HTMLInputElement | null>(null);
@@ -227,11 +222,6 @@ export function TextStudio({
                       'La première traduction peut télécharger le modèle. Il sera ensuite conservé dans le cache du navigateur.'
                     )}
                   </p>
-                  {browserTranslationStatus && (
-                    <p role="status" className="mt-1 text-[11px] text-[#8a351a]">
-                      {browserTranslationStatus}
-                    </p>
-                  )}
                 </div>
               </div>
 
@@ -267,39 +257,6 @@ export function TextStudio({
                   )}
               </div>
             </div>
-
-            {translationProgress && (
-              <div className="mt-3 border-t border-[#e0d5c6] pt-2.5">
-                <div className="flex items-center justify-between gap-2 text-xs font-medium text-[#1c1e21]">
-                  <span className="truncate">{translationProgress.currentLabel}</span>
-                  <span className="font-mono tabular-nums shrink-0">
-                    {translationProgress.completedChapters} / {translationProgress.totalChapters}
-                  </span>
-                </div>
-                <div className="mt-1.5 h-1.5 w-full overflow-hidden rounded-full bg-[#dcd3c4]">
-                  <div
-                    className="h-full bg-[#d9531e] transition-all duration-200"
-                    style={{
-                      width: `${Math.round(
-                        (translationProgress.completedChapters /
-                          Math.max(1, translationProgress.totalChapters)) *
-                          100
-                      )}%`,
-                    }}
-                  />
-                </div>
-                <div className="mt-2 flex justify-end">
-                  <button
-                    type="button"
-                    onClick={onCancelTranslation}
-                    className="inline-flex items-center gap-1 rounded-md border border-[#c5bfb3] bg-white px-2.5 py-1 text-xs font-medium text-[#3b3e44] hover:bg-[#f4f1ea]"
-                  >
-                    <X className="h-3 w-3" aria-hidden="true" />
-                    <span>Annuler la traduction</span>
-                  </button>
-                </div>
-              </div>
-            )}
           </div>
         )}
 

@@ -8,7 +8,7 @@ import {
   Loader2,
   Play,
 } from 'lucide-react';
-import { useState } from 'react';
+import { useMemo, useState } from 'react';
 import type { BookSession, BookmarkItem, ChapterItem } from '../types/walkman';
 import { stripParasiticCharacters } from '../utils/speechSanitizer';
 
@@ -43,6 +43,16 @@ export function ChapterReader({
 }: ChapterReaderProps) {
   const [noteInput, setNoteInput] = useState('');
   const [showNoteComposer, setShowNoteComposer] = useState(false);
+
+  const segmentParagraphs = useMemo(() => {
+    if (!activeChapter) return [];
+    return activeChapter.segments.map((segmentText) =>
+      stripParasiticCharacters(segmentText)
+        .split(/\n{2,}/)
+        .map((p) => p.trim())
+        .filter(Boolean)
+    );
+  }, [activeChapter]);
 
   if (!session || !activeChapter) {
     return (
@@ -251,14 +261,10 @@ export function ChapterReader({
             className="max-h-[65vh] overflow-y-auto rounded-xl border border-[#e0dbd0] bg-white px-4 py-4 sm:max-h-[420px] sm:px-8 sm:py-6"
           >
             <div className="mx-auto max-w-[70ch] space-y-3">
-              {activeChapter.segments.map((segmentText, segIdx) => {
+              {activeChapter.segments.map((_, segIdx) => {
                 const isActiveSeg = segIdx === activeSegmentIndex;
                 const segBookmarked = chapterBookmarks.some((bm) => bm.segmentIndex === segIdx);
-                const cleanedSegment = stripParasiticCharacters(segmentText);
-                const paragraphs = cleanedSegment
-                  .split(/\n{2,}/)
-                  .map((p) => p.trim())
-                  .filter(Boolean);
+                const paragraphs = segmentParagraphs[segIdx] ?? [];
 
                 return (
                   <div

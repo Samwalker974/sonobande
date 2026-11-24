@@ -13,6 +13,7 @@ import {
 } from '../utils/audioDsp';
 import { synthesizeInBrowser } from '../utils/browserVoice';
 import { splitTextAtPausePunctuation } from '../utils/bookSplitter';
+import { sanitizeTextForSpeech } from '../utils/speechSanitizer';
 
 export interface CachedSegmentAudio {
   rawBytes: ArrayBuffer;
@@ -48,6 +49,7 @@ interface UseWalkmanAudioOptions {
   pauseDurationSeconds: number;
   volume: number;
   muted: boolean;
+  suspendVisualMeter?: boolean;
   onChapterIndexChange: (index: number) => void;
   onBeforePlayChapter?: (chapterIndex: number) => Promise<ChapterItem | null>;
   onError: (message: string) => void;
@@ -87,6 +89,7 @@ export function useWalkmanAudio({
   pauseDurationSeconds,
   volume,
   muted,
+  suspendVisualMeter = false,
   onChapterIndexChange,
   onBeforePlayChapter,
   onError,
@@ -108,6 +111,7 @@ export function useWalkmanAudio({
   const gainRef = useRef<GainNode | null>(null);
   const analyserRef = useRef<AnalyserNode | null>(null);
   const rafRef = useRef<number | null>(null);
+  const timerRef = useRef<number | null>(null);
   const activePcmRef = useRef<DecodedPcm | null>(null);
   const startWallTimeRef = useRef<number>(0);
   const offsetSecondsRef = useRef<number>(0);
@@ -132,6 +136,7 @@ export function useWalkmanAudio({
     pauseDurationSeconds,
     volume,
     muted,
+    suspendVisualMeter,
     onChapterIndexChange,
     onBeforePlayChapter,
     onError,
@@ -146,6 +151,7 @@ export function useWalkmanAudio({
     pauseDurationSeconds,
     volume,
     muted,
+    suspendVisualMeter,
     onChapterIndexChange,
     onBeforePlayChapter,
     onError,
@@ -174,6 +180,10 @@ export function useWalkmanAudio({
     if (rafRef.current !== null) {
       cancelAnimationFrame(rafRef.current);
       rafRef.current = null;
+    }
+    if (timerRef.current !== null) {
+      window.clearInterval(timerRef.current);
+      timerRef.current = null;
     }
   }, []);
 
@@ -284,9 +294,27 @@ export function useWalkmanAudio({
       const reqPromise = (async (): Promise<CachedSegmentAudio> => {
         if (signal?.aborted) throw new DOMException('Synthèse annulée', 'AbortError');
 
-        const phrases = splitTextAtPausePunctuation(segmentText);
+        const rawPhrases = splitTextAtPausePunctuation(segmentText);
+        const speakablePhrases = rawPhrases
+          .map((phrase) => ({
+            text: sanitizeTextForSpeech(phrase.text),
+            pauseAfter: phrase.pauseAfter,
+          }))
+          .filter((phrase) => phrase.text.length > 0);
+
+        if (speakablePhrases.length === 0) {
+          const fallbackSampleRate = 22050;
+          const silentResult: CachedSegmentAudio = {
+            rawBytes: encodeWavBuffer(new Float32Array(Math.round(fallbackSampleRate * 0.15)), fallbackSampleRate),
+            mimeType: 'audio/wav',
+            pauseOffsets: [],
+          };
+          audioCacheRef.current.set(key, silentResult);
+          return silentResult;
+        }
+
         const phraseAudio: Array<{ samples: Float32Array; sampleRate: number }> = [];
-        for (const phrase of phrases) {
+        for (const phrase of speakablePhrases) {
           if (signal?.aborted) throw new DOMException('Synthèse annulée', 'AbortError');
           const wavBlob = await synthesizeInBrowser(phrase.text, nVoice, signal);
           const wav = parseWavBuffer(await wavBlob.arrayBuffer());
@@ -309,7 +337,7 @@ export function useWalkmanAudio({
         phraseAudio.forEach((phrase, index) => {
           samples.set(phrase.samples, sampleOffset);
           sampleOffset += phrase.samples.length;
-          if (phrases[index]?.pauseAfter) pauseOffsets.push(sampleOffset);
+          if (speakablePhrases[index]?.pauseAfter) pauseOffsets.push(sampleOffset);
         });
         const result: CachedSegmentAudio = {
           rawBytes: encodeWavBuffer(samples, sampleRate),
@@ -431,27 +459,55 @@ export function useWalkmanAudio({
 
       source.start(0, safeOffset);
 
-      const timeData = new Uint8Array(analyserRef.current?.fftSize ?? 256);
-      const tick = () => {
-        if (playbackRunIdRef.current !== runId) return;
-        const elapsed = ctx.currentTime - startWallTimeRef.current;
-        const pos = Math.min(audioBuffer.duration, offsetSecondsRef.current + elapsed);
-        setSegmentCurrentTime(pos);
-
-        if (analyserRef.current) {
-          analyserRef.current.getByteTimeDomainData(timeData);
-          let sumSq = 0;
-          for (let i = 0; i < timeData.length; i++) {
-            const norm = (timeData[i] - 128) / 128;
-            sumSq += norm * norm;
-          }
-          const rms = Math.sqrt(sumSq / timeData.length);
-          setVuLevel(latestRef.current.muted ? 0 : Math.min(1, rms * 3.2));
+      const startVisualLoop = () => {
+        stopVisualLoops();
+        if (latestRef.current.suspendVisualMeter) {
+          setVuLevel(0);
+          timerRef.current = window.setInterval(() => {
+            if (playbackRunIdRef.current !== runId) return;
+            const elapsed = ctx.currentTime - startWallTimeRef.current;
+            const pos = Math.min(audioBuffer.duration, offsetSecondsRef.current + elapsed);
+            setSegmentCurrentTime(pos);
+          }, 250);
+          return;
         }
 
+        const timeData = new Uint8Array(analyserRef.current?.fftSize ?? 256);
+        let lastTimeUpdateMs = 0;
+        let lastVuUpdateMs = 0;
+
+        const tick = (nowMs: number) => {
+          if (playbackRunIdRef.current !== runId) return;
+          if (latestRef.current.suspendVisualMeter) {
+            startVisualLoop();
+            return;
+          }
+
+          if (nowMs - lastTimeUpdateMs >= 150) {
+            lastTimeUpdateMs = nowMs;
+            const elapsed = ctx.currentTime - startWallTimeRef.current;
+            const pos = Math.min(audioBuffer.duration, offsetSecondsRef.current + elapsed);
+            setSegmentCurrentTime(pos);
+          }
+
+          if (analyserRef.current && nowMs - lastVuUpdateMs >= 65) {
+            lastVuUpdateMs = nowMs;
+            analyserRef.current.getByteTimeDomainData(timeData);
+            let sumSq = 0;
+            for (let i = 0; i < timeData.length; i++) {
+              const norm = (timeData[i] - 128) / 128;
+              sumSq += norm * norm;
+            }
+            const rms = Math.sqrt(sumSq / timeData.length);
+            setVuLevel(latestRef.current.muted ? 0 : Math.min(1, rms * 3.2));
+          }
+
+          rafRef.current = requestAnimationFrame(tick);
+        };
         rafRef.current = requestAnimationFrame(tick);
       };
-      rafRef.current = requestAnimationFrame(tick);
+
+      startVisualLoop();
     },
     [ensureAudioContext, stopVisualLoops, teardownWebAudioSource]
   );
@@ -539,6 +595,54 @@ export function useWalkmanAudio({
     }
     if (muted) setVuLevel(0);
   }, [volume, muted]);
+
+  // Switch between lightweight interval and VU-meter loop cleanly when toggling fullscreen mode
+  useEffect(() => {
+    if (suspendVisualMeter) {
+      setVuLevel(0);
+    }
+    if (stateRef.current !== 'playing' || !audioCtxRef.current || !sourceRef.current) return;
+
+    const ctx = audioCtxRef.current;
+    const duration = segmentDurationRef.current;
+    const runId = playbackRunIdRef.current;
+    stopVisualLoops();
+
+    if (suspendVisualMeter) {
+      timerRef.current = window.setInterval(() => {
+        if (playbackRunIdRef.current !== runId) return;
+        const elapsed = ctx.currentTime - startWallTimeRef.current;
+        const pos = Math.min(duration, offsetSecondsRef.current + elapsed);
+        setSegmentCurrentTime(pos);
+      }, 250);
+    } else {
+      const timeData = new Uint8Array(analyserRef.current?.fftSize ?? 256);
+      let lastTimeUpdateMs = 0;
+      let lastVuUpdateMs = 0;
+      const tick = (nowMs: number) => {
+        if (playbackRunIdRef.current !== runId) return;
+        if (nowMs - lastTimeUpdateMs >= 150) {
+          lastTimeUpdateMs = nowMs;
+          const elapsed = ctx.currentTime - startWallTimeRef.current;
+          const pos = Math.min(duration, offsetSecondsRef.current + elapsed);
+          setSegmentCurrentTime(pos);
+        }
+        if (analyserRef.current && nowMs - lastVuUpdateMs >= 65) {
+          lastVuUpdateMs = nowMs;
+          analyserRef.current.getByteTimeDomainData(timeData);
+          let sumSq = 0;
+          for (let i = 0; i < timeData.length; i++) {
+            const norm = (timeData[i] - 128) / 128;
+            sumSq += norm * norm;
+          }
+          const rms = Math.sqrt(sumSq / timeData.length);
+          setVuLevel(latestRef.current.muted ? 0 : Math.min(1, rms * 3.2));
+        }
+        rafRef.current = requestAnimationFrame(tick);
+      };
+      rafRef.current = requestAnimationFrame(tick);
+    }
+  }, [suspendVisualMeter, stopVisualLoops]);
 
   // Live speed/pitch reprocessing while playing
   useEffect(() => {

@@ -6,6 +6,7 @@ import {
   Disc3,
   Download,
   FastForward,
+  Maximize2,
   Pause,
   Play,
   Rewind,
@@ -21,7 +22,6 @@ import { getNeuralVoiceById } from '../constants/voices';
 import type {
   BookSession,
   ChapterItem,
-  ExportProgress,
   NeuralVoiceId,
   ReadyMp3Download,
   TransportState,
@@ -29,7 +29,6 @@ import type {
 import { DEFAULT_PAUSE_DURATION_SECONDS } from '../utils/audioDsp';
 import { formatPitchLabel, formatTimecode } from '../utils/bookSplitter';
 import { formatByteSizeFr } from '../utils/mp3Encoder';
-import { ExportProgressCard } from './ExportProgressCard';
 
 interface WalkmanDeckProps {
   session: BookSession | null;
@@ -48,7 +47,7 @@ interface WalkmanDeckProps {
   pauseDurationSeconds: number;
   volume: number;
   muted: boolean;
-  exportProgress: ExportProgress | null;
+  isExporting: boolean;
   exportSuccessMessage: string | null;
   exportErrorMessage: string | null;
   readyMp3: ReadyMp3Download | null;
@@ -70,9 +69,9 @@ interface WalkmanDeckProps {
   onVolumeChange: (volume: number) => void;
   onToggleMute: () => void;
   onAddBookmark: () => void;
+  onEnterFullscreen: () => void;
   onExportChapterMp3: () => void;
   onExportBookMp3: () => void;
-  onCancelExport: () => void;
   onDismissReadyMp3: () => void;
 }
 
@@ -140,7 +139,7 @@ export function WalkmanDeck({
   pauseDurationSeconds,
   volume,
   muted,
-  exportProgress,
+  isExporting,
   exportSuccessMessage,
   exportErrorMessage,
   readyMp3,
@@ -162,15 +161,14 @@ export function WalkmanDeck({
   onVolumeChange,
   onToggleMute,
   onAddBookmark,
+  onEnterFullscreen,
   onExportChapterMp3,
   onExportBookMp3,
-  onCancelExport,
   onDismissReadyMp3,
 }: WalkmanDeckProps) {
   const isPlaying = transportState === 'playing';
   const isPaused = transportState === 'paused';
   const isBuffering = transportState === 'buffering';
-  const isExporting = Boolean(exportProgress);
   const hasBook = Boolean(session && activeChapter);
   const canExport = hasBook || hasDraftText;
   const totalChapters = session?.chapters.length ?? 0;
@@ -308,7 +306,7 @@ export function WalkmanDeck({
       </div>
 
       {/* Hardware Silkscreen Header Strip */}
-      <div className="mb-3 flex items-center justify-between px-1">
+      <div className="mb-3 flex flex-wrap items-center justify-between gap-2 px-1">
         <div className="flex items-baseline gap-2.5">
           <span className="font-display text-sm font-bold tracking-[0.14em] text-[#22252a]">
             SONOBANDE
@@ -327,6 +325,18 @@ export function WalkmanDeck({
           <span data-testid="walkman-status" className="font-mono">
             {statusText}
           </span>
+          <button
+            type="button"
+            onClick={onEnterFullscreen}
+            disabled={!hasBook}
+            data-testid="deck-fullscreen-btn"
+            aria-label="Ouvrir le mode écoute plein écran"
+            title="Mode écoute plein écran"
+            className="inline-flex items-center gap-1 rounded-md border border-[#b2ada2] bg-[#ece9e2] px-2 py-1 text-[11px] font-semibold text-[#1c1e21] transition-colors hover:bg-white focus-visible:outline-2 focus-visible:outline-[#d9531e] disabled:cursor-not-allowed disabled:opacity-40"
+          >
+            <Maximize2 className="h-3 w-3 text-[#d9531e]" aria-hidden="true" />
+            <span>Plein écran</span>
+          </button>
         </div>
       </div>
 
@@ -724,36 +734,34 @@ export function WalkmanDeck({
           </button>
         </div>
 
-        {/* MP3 Export Step-by-Step Progress or Dual Export Buttons */}
-        {exportProgress ? (
-          <ExportProgressCard progress={exportProgress} onCancel={onCancelExport} />
-        ) : (
-          <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
-            <button
-              type="button"
-              onClick={onExportChapterMp3}
-              disabled={!canExport}
-              className="mech-key inline-flex min-h-[44px] items-center justify-center gap-2 rounded-lg px-3.5 py-2.5 text-xs font-semibold text-[#1c1e21] whitespace-nowrap focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#d9531e] disabled:cursor-not-allowed disabled:opacity-45"
-            >
-              <Download className="h-4 w-4 text-[#d9531e] shrink-0" aria-hidden="true" />
-              <span>MP3 du chapitre</span>
-            </button>
+        {/* Dual MP3 Export Buttons (progress shown in single global bar) */}
+        <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+          <button
+            type="button"
+            onClick={onExportChapterMp3}
+            disabled={!canExport || isExporting}
+            className="mech-key inline-flex min-h-[44px] items-center justify-center gap-2 rounded-lg px-3.5 py-2.5 text-xs font-semibold text-[#1c1e21] whitespace-nowrap focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#d9531e] disabled:cursor-not-allowed disabled:opacity-45"
+          >
+            <Download className="h-4 w-4 text-[#d9531e] shrink-0" aria-hidden="true" />
+            <span>{isExporting ? 'Export en cours…' : 'MP3 du chapitre'}</span>
+          </button>
 
-            <button
-              type="button"
-              onClick={onExportBookMp3}
-              disabled={!canExport}
-              className="mech-key inline-flex min-h-[44px] items-center justify-center gap-2 rounded-lg px-3.5 py-2.5 text-xs font-semibold text-[#1c1e21] whitespace-nowrap focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#d9531e] disabled:cursor-not-allowed disabled:opacity-45"
-            >
-              <Download className="h-4 w-4 text-[#1c1e21] shrink-0" aria-hidden="true" />
-              <span>
-                {totalChapters > 1
+          <button
+            type="button"
+            onClick={onExportBookMp3}
+            disabled={!canExport || isExporting}
+            className="mech-key inline-flex min-h-[44px] items-center justify-center gap-2 rounded-lg px-3.5 py-2.5 text-xs font-semibold text-[#1c1e21] whitespace-nowrap focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#d9531e] disabled:cursor-not-allowed disabled:opacity-45"
+          >
+            <Download className="h-4 w-4 text-[#1c1e21] shrink-0" aria-hidden="true" />
+            <span>
+              {isExporting
+                ? 'Encodage dans le worker…'
+                : totalChapters > 1
                   ? `MP3 livre entier (${totalBookSegments} seg.)`
                   : 'MP3 complet'}
-              </span>
-            </button>
-          </div>
-        )}
+            </span>
+          </button>
+        </div>
 
         {exportErrorMessage && (
           <div
@@ -765,7 +773,7 @@ export function WalkmanDeck({
           </div>
         )}
 
-        {readyMp3 && !exportProgress && (
+        {readyMp3 && !isExporting && (
           <div
             data-testid="ready-mp3-card"
             role="status"

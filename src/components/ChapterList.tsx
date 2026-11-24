@@ -19,14 +19,12 @@ import type {
   BookSession,
   BookmarkItem,
   ChapterItem,
-  ExportProgress,
   ReadingPosition,
   ReadyMp3Download,
 } from '../types/walkman';
 import { formatLongDuration } from '../utils/bookSplitter';
 import { formatByteSizeFr } from '../utils/mp3Encoder';
 import { MAX_AUTO_SAVED_DOCUMENT_CHARS } from '../utils/documentLimits';
-import { ExportProgressCard } from './ExportProgressCard';
 
 const CHAPTERS_PER_PAGE = 50;
 
@@ -36,7 +34,6 @@ interface ChapterListProps {
   activeSegmentIndex: number;
   isPlaying: boolean;
   isExporting: boolean;
-  exportProgress: ExportProgress | null;
   readyMp3: ReadyMp3Download | null;
   exportErrorMessage: string | null;
   savedPosition: ReadingPosition | null;
@@ -45,7 +42,6 @@ interface ChapterListProps {
   onTranslateChapter: (chapterIndex: number) => void;
   onExportChapterMp3: (chapterIndex: number) => void;
   onExportBookMp3: () => void;
-  onCancelExport: () => void;
   onDismissReadyMp3: () => void;
   onResumeSavedPosition: (autoPlay: boolean) => void;
   onJumpToBookmark: (bookmark: BookmarkItem, autoPlay: boolean) => void;
@@ -66,7 +62,6 @@ export function ChapterList({
   activeSegmentIndex,
   isPlaying,
   isExporting,
-  exportProgress,
   readyMp3,
   exportErrorMessage,
   savedPosition,
@@ -75,7 +70,6 @@ export function ChapterList({
   onTranslateChapter,
   onExportChapterMp3,
   onExportBookMp3,
-  onCancelExport,
   onDismissReadyMp3,
   onResumeSavedPosition,
   onJumpToBookmark,
@@ -213,14 +207,7 @@ export function ChapterList({
         </div>
       </div>
 
-      {/* Inline MP3 export step-by-step feedback right inside ChapterList */}
-      {exportProgress && (
-        <div className="mt-4">
-          <ExportProgressCard progress={exportProgress} onCancel={onCancelExport} compact />
-        </div>
-      )}
-
-      {!exportProgress && exportErrorMessage && (
+      {!isExporting && exportErrorMessage && (
         <div
           role="alert"
           className="mt-4 flex items-start gap-2.5 rounded-xl border border-[#d49a89] bg-[#fbefeb] px-4 py-3 text-xs text-[#7c240a]"
@@ -230,7 +217,7 @@ export function ChapterList({
         </div>
       )}
 
-      {!exportProgress && readyMp3 && (
+      {!isExporting && readyMp3 && (
         <div className="mt-4 flex flex-col gap-3 rounded-xl border border-[#b9d3bf] bg-[#eef6f0] px-4 py-3 sm:flex-row sm:items-center sm:justify-between">
           <div className="flex min-w-0 items-center gap-2.5">
             <CheckCircle2 className="h-4 w-4 shrink-0 text-[#2c5e3b]" aria-hidden="true" />

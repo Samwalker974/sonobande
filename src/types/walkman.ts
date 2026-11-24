@@ -109,6 +109,26 @@ export interface ExportProgress {
   totalSteps: number;
 }
 
+export type GlobalTaskKind = 'export' | 'translation' | 'import';
+
+export interface GlobalTaskStep {
+  id: number;
+  label: string;
+}
+
+export interface GlobalTaskProgress {
+  kind: GlobalTaskKind;
+  stage?: string;
+  headline: string;
+  detail: string;
+  completed?: number;
+  total?: number;
+  percent?: number | null;
+  steps?: GlobalTaskStep[];
+  activeStepIndex?: number;
+  cancelLabel?: string;
+}
+
 export interface ReadyMp3Download {
   url: string;
   filename: string;
