@@ -1,15 +1,9 @@
-export type GeminiVoiceName = 'Kore' | 'Zephyr' | 'Puck' | 'Charon' | 'Fenrir';
-
 export type NeuralVoiceId =
   | 'fr-FR-DeniseNeural'
   | 'fr-FR-HenriNeural'
   | 'fr-FR-VivienneMultilingualNeural'
   | 'fr-FR-RemyMultilingualNeural'
   | 'fr-FR-EloiseNeural';
-
-export type StyleId = 'naturel' | 'journal' | 'narratif' | 'didactique';
-
-export type VoiceEngineMode = 'neural' | 'gemini';
 
 export type DocumentSourceType = 'paste' | 'pdf' | 'epub' | 'txt';
 
@@ -23,26 +17,12 @@ export type ChapterTranslationStatus =
   | 'translating'
   | 'translated';
 
-export interface VoiceProfile {
-  id: GeminiVoiceName;
-  name: string;
-  gender: 'Féminine' | 'Masculine';
-  timbre: string;
-  description: string;
-}
-
 export interface NeuralVoiceProfile {
   id: NeuralVoiceId;
   name: string;
   gender: 'Féminine' | 'Masculine';
   timbre: string;
   description: string;
-}
-
-export interface StylePreset {
-  id: StyleId;
-  label: string;
-  shortHint: string;
 }
 
 export interface ChapterItem {
@@ -145,7 +125,5 @@ export interface SampleScript {
   id: string;
   title: string;
   language: DetectedLanguage;
-  voiceId: GeminiVoiceName;
-  styleId: StyleId;
   text: string;
 }

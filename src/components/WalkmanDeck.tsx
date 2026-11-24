@@ -17,17 +17,14 @@ import {
   VolumeX,
   X,
 } from 'lucide-react';
-import { getNeuralVoiceById, getStyleById, getVoiceById } from '../constants/voices';
+import { getNeuralVoiceById } from '../constants/voices';
 import type {
   BookSession,
   ChapterItem,
   ExportProgress,
-  GeminiVoiceName,
   NeuralVoiceId,
   ReadyMp3Download,
-  StyleId,
   TransportState,
-  VoiceEngineMode,
 } from '../types/walkman';
 import { formatPitchLabel, formatTimecode } from '../utils/bookSplitter';
 import { formatByteSizeFr } from '../utils/mp3Encoder';
@@ -37,10 +34,7 @@ interface WalkmanDeckProps {
   session: BookSession | null;
   activeChapter: ChapterItem | null;
   activeChapterIndex: number;
-  engineMode: VoiceEngineMode;
   neuralVoiceId: NeuralVoiceId;
-  geminiVoiceId: GeminiVoiceName;
-  geminiStyleId: StyleId;
   transportState: TransportState;
   activeSegmentIndex: number;
   totalSegmentsInChapter: number;
@@ -130,10 +124,7 @@ export function WalkmanDeck({
   session,
   activeChapter,
   activeChapterIndex,
-  engineMode,
   neuralVoiceId,
-  geminiVoiceId,
-  geminiStyleId,
   transportState,
   activeSegmentIndex,
   totalSegmentsInChapter,
@@ -187,8 +178,6 @@ export function WalkmanDeck({
     : Math.max(0.75, Math.min(3.5, 1.9 / Math.max(0.5, speed)));
 
   const neuralVoiceProfile = getNeuralVoiceById(neuralVoiceId);
-  const voiceProfile = getVoiceById(geminiVoiceId);
-  const stylePreset = getStyleById(geminiStyleId);
   const vuNeedleAngle = -42 + Math.min(1, isBuffering ? 0.35 : vuLevel) * 84;
 
   const statusText = isExporting
@@ -317,7 +306,7 @@ export function WalkmanDeck({
             SONOBANDE
           </span>
           <span className="text-xs font-medium text-[#55585e]">
-            {engineMode === 'neural' ? 'Voix neuronale illimitée' : 'Voix Gemini HD'}
+            {'Voix neuronale illimitée'}
           </span>
         </div>
         <div className="flex items-center gap-2 text-xs font-medium text-[#3b3e44]">
@@ -357,7 +346,7 @@ export function WalkmanDeck({
           <div className="mb-3.5 overflow-hidden rounded-md border border-[#383a3e] bg-[#f4f1ea] text-[#1c1e21]">
             <div
               className="flex items-center justify-between px-3 py-1.5 text-[11px] font-semibold text-white"
-              style={{ backgroundColor: engineMode === 'neural' ? '#D9531E' : '#2E5A88' }}
+              style={{ backgroundColor: '#D9531E' }}
             >
               <span className="font-mono">
                 {session
@@ -382,9 +371,7 @@ export function WalkmanDeck({
                     <span className="truncate max-w-[160px]">{session.title}</span>
                     <span aria-hidden="true">·</span>
                     <span>
-                      {engineMode === 'neural'
-                        ? `${neuralVoiceProfile.name} (${neuralVoiceProfile.timbre})`
-                        : `${voiceProfile.name} (${stylePreset.label})`}
+                      {`${neuralVoiceProfile.name} (${neuralVoiceProfile.timbre})`}
                     </span>
                   </p>
                 </>
@@ -411,7 +398,7 @@ export function WalkmanDeck({
                   className="h-full transition-all duration-150"
                   style={{
                     width: `${Math.round(chapterProgressRatio * 100)}%`,
-                    backgroundColor: engineMode === 'neural' ? '#D9531E' : '#3B6EA3',
+                    backgroundColor: '#D9531E',
                   }}
                 />
               </div>

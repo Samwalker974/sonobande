@@ -3,42 +3,30 @@ import {
   BookOpen,
   Eraser,
   FileUp,
-  Headphones,
   Languages,
   Loader2,
   Play,
-  Radio,
   ShieldCheck,
   X,
 } from 'lucide-react';
 import { useRef, useState } from 'react';
 import {
   FRENCH_SAMPLE_SCRIPTS,
-  FRENCH_VOICES,
   getNeuralVoiceById,
-  getStyleById,
-  getVoiceById,
   NEURAL_FRENCH_VOICES,
-  STYLE_PRESETS,
 } from '../constants/voices';
 import type {
   BookSession,
-  GeminiVoiceName,
   NeuralVoiceId,
   SampleScript,
-  StyleId,
   TranslationProgress,
-  VoiceEngineMode,
 } from '../types/walkman';
 import { estimateFrenchSpeechSeconds, formatLongDuration } from '../utils/bookSplitter';
 import { detectLikelyEnglish } from '../utils/languageDetect';
 
 interface TextStudioProps {
   session: BookSession | null;
-  engineMode: VoiceEngineMode;
   neuralVoiceId: NeuralVoiceId;
-  geminiVoiceId: GeminiVoiceName;
-  geminiStyleId: StyleId;
   draftTitle: string;
   draftText: string;
   speed: number;
@@ -47,11 +35,7 @@ interface TextStudioProps {
   autoTranslateToFrench: boolean;
   translationProgress: TranslationProgress | null;
   errorMessage: string | null;
-  quotaPromptVisible: boolean;
-  onEngineModeChange: (mode: VoiceEngineMode) => void;
   onNeuralVoiceChange: (voiceId: NeuralVoiceId) => void;
-  onGeminiVoiceChange: (voiceId: GeminiVoiceName) => void;
-  onGeminiStyleChange: (styleId: StyleId) => void;
   onDraftTitleChange: (title: string) => void;
   onDraftTextChange: (text: string) => void;
   onImportFile: (file: File) => void;
@@ -60,16 +44,12 @@ interface TextStudioProps {
   onToggleAutoTranslate: () => void;
   onTranslateAllChapters: () => void;
   onCancelTranslation: () => void;
-  onSwitchToNeuralAfterQuota: () => void;
   onClearDraft: () => void;
 }
 
 export function TextStudio({
   session,
-  engineMode,
   neuralVoiceId,
-  geminiVoiceId,
-  geminiStyleId,
   draftTitle,
   draftText,
   speed,
@@ -78,11 +58,7 @@ export function TextStudio({
   autoTranslateToFrench,
   translationProgress,
   errorMessage,
-  quotaPromptVisible,
-  onEngineModeChange,
   onNeuralVoiceChange,
-  onGeminiVoiceChange,
-  onGeminiStyleChange,
   onDraftTitleChange,
   onDraftTextChange,
   onImportFile,
@@ -91,15 +67,12 @@ export function TextStudio({
   onToggleAutoTranslate,
   onTranslateAllChapters,
   onCancelTranslation,
-  onSwitchToNeuralAfterQuota,
   onClearDraft,
 }: TextStudioProps) {
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const [isDragging, setIsDragging] = useState(false);
 
   const selectedNeuralVoice = getNeuralVoiceById(neuralVoiceId);
-  const selectedVoice = getVoiceById(geminiVoiceId);
-  const selectedStyle = getStyleById(geminiStyleId);
   const charCount = draftText.length;
   const estimatedSeconds = estimateFrenchSpeechSeconds(draftText, speed);
   const draftLooksEnglish = !session && draftText.trim().length > 24 && detectLikelyEnglish(draftText) === 'en';
@@ -142,69 +115,8 @@ export function TextStudio({
           </p>
         </div>
 
-        {/* Voice Engine Switcher: Unlimited Neural Voices vs Gemini HD */}
-        <div className="mb-4 rounded-xl border border-[#dcd7cc] bg-[#efece4] p-3">
-          <span className="mb-2 block text-xs font-semibold text-[#34373c]">
-            Moteur de lecture
-          </span>
-          <div className="grid grid-cols-1 gap-2 sm:grid-cols-2" role="radiogroup" aria-label="Choix du moteur vocal">
-            <button
-              type="button"
-              role="radio"
-              aria-checked={engineMode === 'neural'}
-              onClick={() => onEngineModeChange('neural')}
-              className={`flex items-start gap-2.5 rounded-lg border px-3 py-2.5 text-left transition-colors focus-visible:outline-2 focus-visible:outline-[#d9531e] ${
-                engineMode === 'neural'
-                  ? 'border-[#1c1e21] bg-[#1c1e21] text-[#f7f5f0]'
-                  : 'border-[#d4cfc4] bg-white text-[#1c1e21] hover:bg-[#faf8f4]'
-              }`}
-            >
-              <Headphones className="mt-0.5 h-4 w-4 shrink-0 text-[#d9531e]" aria-hidden="true" />
-              <div className="min-w-0">
-                <span className="block font-display text-sm font-semibold">
-                  Voix neuronales illimitées
-                </span>
-                <span
-                  className={`block text-[11px] leading-snug ${
-                    engineMode === 'neural' ? 'text-[#cfcbc2]' : 'text-[#5b5e64]'
-                  }`}
-                >
-                  Voix humaines naturelles · zéro quota + MP3 illimité
-                </span>
-              </div>
-            </button>
-
-            <button
-              type="button"
-              role="radio"
-              aria-checked={engineMode === 'gemini'}
-              onClick={() => onEngineModeChange('gemini')}
-              className={`flex items-start gap-2.5 rounded-lg border px-3 py-2.5 text-left transition-colors focus-visible:outline-2 focus-visible:outline-[#d9531e] ${
-                engineMode === 'gemini'
-                  ? 'border-[#1c1e21] bg-[#1c1e21] text-[#f7f5f0]'
-                  : 'border-[#d4cfc4] bg-white text-[#1c1e21] hover:bg-[#faf8f4]'
-              }`}
-            >
-              <Radio className="mt-0.5 h-4 w-4 shrink-0 text-[#3b6ea3]" aria-hidden="true" />
-              <div className="min-w-0">
-                <span className="block font-display text-sm font-semibold">
-                  Voix Gemini HD
-                </span>
-                <span
-                  className={`block text-[11px] leading-snug ${
-                    engineMode === 'gemini' ? 'text-[#cfcbc2]' : 'text-[#5b5e64]'
-                  }`}
-                >
-                  Voix expressives par style + export MP3
-                </span>
-              </div>
-            </button>
-          </div>
-        </div>
-
-        {/* Voice Selection (contextual to active engine) */}
-        {engineMode === 'neural' ? (
-          <div className="space-y-2.5">
+        {/* Neural voice selection */}
+        <div className="mb-4 space-y-2.5">
             <div>
               <span className="mb-1.5 block text-xs font-semibold text-[#34373c]">
                 Voix neuronale française (illimitée, non robotique)
@@ -249,79 +161,7 @@ export function TextStudio({
               <span className="mx-1" aria-hidden="true">·</span>
               <span>{selectedNeuralVoice.description}</span>
             </p>
-          </div>
-        ) : (
-          <div className="space-y-3">
-            <div>
-              <span className="mb-1.5 block text-xs font-semibold text-[#34373c]">
-                Voix naturelle française (Gemini HD)
-              </span>
-              <div
-                role="radiogroup"
-                aria-label="Sélection de la voix française Gemini"
-                className="grid grid-cols-2 gap-2 sm:grid-cols-5"
-              >
-                {FRENCH_VOICES.map((voice) => {
-                  const selected = voice.id === geminiVoiceId;
-                  return (
-                    <button
-                      key={voice.id}
-                      type="button"
-                      role="radio"
-                      aria-checked={selected}
-                      onClick={() => onGeminiVoiceChange(voice.id)}
-                      className={`flex flex-col items-start rounded-lg border px-2.5 py-2 text-left transition-colors focus-visible:outline-2 focus-visible:outline-[#d9531e] ${
-                        selected
-                          ? 'border-[#1c1e21] bg-[#1c1e21] text-[#f7f5f0]'
-                          : 'border-[#d4cfc4] bg-white text-[#1c1e21] hover:border-[#a9a396]'
-                      }`}
-                    >
-                      <span className="font-display text-sm font-semibold whitespace-nowrap">
-                        {voice.name}
-                      </span>
-                      <span
-                        className={`mt-0.5 text-[11px] leading-tight ${
-                          selected ? 'text-[#cfcbc2]' : 'text-[#5b5e64]'
-                        }`}
-                      >
-                        {voice.timbre}
-                      </span>
-                    </button>
-                  );
-                })}
-              </div>
-            </div>
-
-            <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
-              <div className="inline-flex flex-wrap gap-1 rounded-lg bg-[#e8e4db] p-1">
-                {STYLE_PRESETS.map((preset) => {
-                  const active = preset.id === geminiStyleId;
-                  return (
-                    <button
-                      key={preset.id}
-                      type="button"
-                      onClick={() => onGeminiStyleChange(preset.id)}
-                      aria-pressed={active}
-                      className={`rounded-md px-2.5 py-1 text-xs font-medium whitespace-nowrap transition-colors ${
-                        active
-                          ? 'bg-white text-[#1c1e21] shadow-xs'
-                          : 'text-[#4e5157] hover:text-[#1c1e21]'
-                      }`}
-                    >
-                      {preset.label}
-                    </button>
-                  );
-                })}
-              </div>
-
-              <p className="text-xs text-[#55585e]">
-                <span className="font-semibold text-[#1c1e21]">{selectedVoice.name}</span>
-                <span className="mx-1" aria-hidden="true">·</span>
-                <span>{selectedStyle.shortHint}</span>
-              </p>
-            </div>
-          </div>
-        )}
+        </div>
 
         {/* Local PDF / EPUB / TXT Dropzone */}
         <div className="mt-4">
@@ -557,17 +397,6 @@ export function TextStudio({
               <AlertCircle className="mt-0.5 h-4 w-4 shrink-0" aria-hidden="true" />
               <span>{errorMessage}</span>
             </div>
-            {quotaPromptVisible && (
-              <div className="pl-6">
-                <button
-                  type="button"
-                  onClick={onSwitchToNeuralAfterQuota}
-                  className="rounded-md bg-[#1c1e21] px-3 py-1.5 text-xs font-semibold text-white hover:bg-[#31343a]"
-                >
-                  Continuer en voix neuronale illimitée
-                </button>
-              </div>
-            )}
           </div>
         )}
 

@@ -5,7 +5,7 @@ import { ChapterReader } from './components/ChapterReader';
 import { TextStudio } from './components/TextStudio';
 import { TopBar } from './components/TopBar';
 import { WalkmanDeck } from './components/WalkmanDeck';
-import { getNeuralVoiceById, getVoiceById } from './constants/voices';
+import { getNeuralVoiceById } from './constants/voices';
 import { useWalkmanAudio } from './hooks/useWalkmanAudio';
 import type {
   BookmarkItem,
@@ -13,14 +13,11 @@ import type {
   BrowserStorageMetrics,
   ChapterItem,
   ExportProgress,
-  GeminiVoiceName,
   NeuralVoiceId,
   ReadyMp3Download,
   SampleScript,
   SavedBookRecord,
-  StyleId,
   TranslationProgress,
-  VoiceEngineMode,
 } from './types/walkman';
 import { processAudioSpeedPitch } from './utils/audioDsp';
 import {
@@ -83,11 +80,8 @@ export default function App() {
   const [draftTitle, setDraftTitle] = useState('');
   const [draftText, setDraftText] = useState('');
 
-  // Dual voice engine settings (Unlimited Natural Neural French voices by default)
-  const [engineMode, setEngineMode] = useState<VoiceEngineMode>('neural');
+  // Neural Edge TTS voice settings
   const [neuralVoiceId, setNeuralVoiceId] = useState<NeuralVoiceId>('fr-FR-DeniseNeural');
-  const [geminiVoiceId, setGeminiVoiceId] = useState<GeminiVoiceName>('Kore');
-  const [geminiStyleId, setGeminiStyleId] = useState<StyleId>('narratif');
 
   // English -> French translation settings & progress
   const [autoTranslateToFrench, setAutoTranslateToFrench] = useState<boolean>(true);
@@ -103,7 +97,6 @@ export default function App() {
   const [isImportingFile, setIsImportingFile] = useState(false);
   const [importStatusLabel, setImportStatusLabel] = useState<string | null>(null);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
-  const [quotaPromptVisible, setQuotaPromptVisible] = useState(false);
   const [exportProgress, setExportProgress] = useState<ExportProgress | null>(null);
   const [exportSuccessMessage, setExportSuccessMessage] = useState<string | null>(null);
   const [exportErrorMessage, setExportErrorMessage] = useState<string | null>(null);
@@ -334,10 +327,7 @@ export default function App() {
   const audio = useWalkmanAudio({
     session,
     activeChapterIndex,
-    engineMode,
     neuralVoiceId,
-    geminiVoiceId,
-    geminiStyleId,
     speed,
     pitchSemitones,
     volume,
@@ -346,13 +336,8 @@ export default function App() {
       setActiveChapterIndex(nextIdx);
     },
     onBeforePlayChapter: handleBeforePlayChapter,
-    onQuotaReached: (msg) => {
-      setErrorMessage(msg);
-      setQuotaPromptVisible(true);
-    },
     onError: (msg) => {
       setErrorMessage(msg);
-      setQuotaPromptVisible(false);
     },
   });
 
@@ -482,7 +467,6 @@ export default function App() {
 
   const handleImportFile = async (file: File) => {
     setErrorMessage(null);
-    setQuotaPromptVisible(false);
     setExportSuccessMessage(null);
     setIsImportingFile(true);
     setImportStatusLabel(`Lecture de ${file.name}…`);
@@ -512,12 +496,10 @@ export default function App() {
     const cleaned = draftText.trim();
     if (!cleaned) {
       setErrorMessage('Importez un fichier PDF/EPUB/TXT ou collez un texte français ou anglais.');
-      setQuotaPromptVisible(false);
       return;
     }
 
     setErrorMessage(null);
-    setQuotaPromptVisible(false);
     setExportSuccessMessage(null);
 
     const inferredTitle =
@@ -540,12 +522,9 @@ export default function App() {
 
   const handleLoadSample = (sample: SampleScript) => {
     setErrorMessage(null);
-    setQuotaPromptVisible(false);
     setExportSuccessMessage(null);
     setDraftTitle(sample.title);
     setDraftText(sample.text);
-    setGeminiVoiceId(sample.voiceId);
-    setGeminiStyleId(sample.styleId);
 
     const chapters = buildChaptersFromRawText(sample.text, sample.title);
     const nextSession = createBookSession({
@@ -563,7 +542,6 @@ export default function App() {
     if (!currentSession || !ch) return;
 
     setErrorMessage(null);
-    setQuotaPromptVisible(false);
 
     const force = ch.translationStatus === 'french_native';
     try {
@@ -592,7 +570,6 @@ export default function App() {
     translationAbortRef.current = ac;
 
     setErrorMessage(null);
-    setQuotaPromptVisible(false);
     setTranslationProgress({
       completedChapters: 0,
       totalChapters: pendingIndices.length,
@@ -633,7 +610,6 @@ export default function App() {
       return;
     }
     setErrorMessage(null);
-    setQuotaPromptVisible(false);
     setActiveChapterIndex(chapterIndex);
 
     if (autoPlay) {
@@ -690,7 +666,6 @@ export default function App() {
   const handleJumpToBookmark = (bookmark: BookmarkItem, autoPlay: boolean) => {
     if (!session) return;
     setErrorMessage(null);
-    setQuotaPromptVisible(false);
     audio.jumpToLocation(bookmark.chapterIndex, bookmark.segmentIndex, autoPlay);
     document.getElementById('liseuse')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
   };
@@ -705,18 +680,8 @@ export default function App() {
     setBookmarks((prev) => prev.filter((bm) => bm.id !== bookmarkId));
   };
 
-  const handleSwitchToNeuralAfterQuota = () => {
-    setErrorMessage(null);
-    setQuotaPromptVisible(false);
-    setEngineMode('neural');
-    if (session) {
-      void audio.play(activeChapterIndex, audio.activeSegmentIndex);
-    }
-  };
-
   const handleResumeBook = (book: SavedBookRecord, autoPlay: boolean) => {
     setErrorMessage(null);
-    setQuotaPromptVisible(false);
     setExportSuccessMessage(null);
 
     if (sessionRef.current?.id === book.id) {
@@ -759,7 +724,6 @@ export default function App() {
   const handleResumeCurrentSavedPosition = (autoPlay: boolean) => {
     if (!session || !activeSavedBook) return;
     setErrorMessage(null);
-    setQuotaPromptVisible(false);
     audio.jumpToLocation(
       activeSavedBook.lastPosition.chapterIndex,
       activeSavedBook.lastPosition.segmentIndex,
@@ -837,7 +801,6 @@ export default function App() {
     setDraftTitle('');
     setDraftText('');
     setErrorMessage(null);
-    setQuotaPromptVisible(false);
     setTranslationProgress(null);
     setExportProgress(null);
     setExportSuccessMessage(null);
@@ -896,15 +859,11 @@ export default function App() {
     exportAbortRef.current = ac;
 
     setErrorMessage(null);
-    setQuotaPromptVisible(false);
     setExportSuccessMessage(null);
     setExportErrorMessage(null);
     replaceReadyMp3(null);
 
-    const voiceLabel =
-      engineMode === 'neural'
-        ? getNeuralVoiceById(neuralVoiceId).name
-        : getVoiceById(geminiVoiceId).name;
+    const voiceLabel = getNeuralVoiceById(neuralVoiceId).name;
 
     try {
       // Step 1/3: Prepare & translate untranslated or currently-translating English chapters
@@ -970,7 +929,7 @@ export default function App() {
 
       const totalSegments = preparedChapters.reduce((sum, ch) => sum + ch.segments.length, 0);
       const isDefaultTuning = Math.abs(speed - 1.0) < 0.01 && Math.abs(pitchSemitones) < 0.05;
-      const canFastConcatNeuralMp3 = engineMode === 'neural' && isDefaultTuning;
+      const canFastConcatNeuralMp3 = isDefaultTuning;
 
       setExportProgress({
         scope,
@@ -1117,9 +1076,6 @@ export default function App() {
         const msg = typed.message || "Erreur lors de l'encodage MP3.";
         setErrorMessage(msg);
         setExportErrorMessage(msg);
-        if (typed.isQuota) {
-          setQuotaPromptVisible(true);
-        }
       }
     } finally {
       exportAbortRef.current = null;
@@ -1145,10 +1101,7 @@ export default function App() {
               session={session}
               activeChapter={activeChapter}
               activeChapterIndex={activeChapterIndex}
-              engineMode={engineMode}
               neuralVoiceId={neuralVoiceId}
-              geminiVoiceId={geminiVoiceId}
-              geminiStyleId={geminiStyleId}
               transportState={audio.transportState}
               activeSegmentIndex={audio.activeSegmentIndex}
               totalSegmentsInChapter={audio.totalSegmentsInChapter}
@@ -1197,10 +1150,7 @@ export default function App() {
           <div className="lg:col-span-6 xl:col-span-7">
             <TextStudio
               session={session}
-              engineMode={engineMode}
               neuralVoiceId={neuralVoiceId}
-              geminiVoiceId={geminiVoiceId}
-              geminiStyleId={geminiStyleId}
               draftTitle={draftTitle}
               draftText={draftText}
               speed={speed}
@@ -1209,15 +1159,7 @@ export default function App() {
               autoTranslateToFrench={autoTranslateToFrench}
               translationProgress={translationProgress}
               errorMessage={errorMessage}
-              quotaPromptVisible={quotaPromptVisible}
-              onEngineModeChange={(mode) => {
-                setEngineMode(mode);
-                setErrorMessage(null);
-                setQuotaPromptVisible(false);
-              }}
               onNeuralVoiceChange={setNeuralVoiceId}
-              onGeminiVoiceChange={setGeminiVoiceId}
-              onGeminiStyleChange={setGeminiStyleId}
               onDraftTitleChange={setDraftTitle}
               onDraftTextChange={(val) => {
                 setDraftText(val);
@@ -1229,7 +1171,6 @@ export default function App() {
               onToggleAutoTranslate={() => setAutoTranslateToFrench((prev) => !prev)}
               onTranslateAllChapters={() => void handleTranslateAllChapters()}
               onCancelTranslation={() => translationAbortRef.current?.abort()}
-              onSwitchToNeuralAfterQuota={handleSwitchToNeuralAfterQuota}
               onClearDraft={() => {
                 setDraftText('');
                 setDraftTitle('');

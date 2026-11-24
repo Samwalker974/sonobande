@@ -2,11 +2,8 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import type {
   BookSession,
   ChapterItem,
-  GeminiVoiceName,
   NeuralVoiceId,
-  StyleId,
   TransportState,
-  VoiceEngineMode,
 } from '../types/walkman';
 import { parseWavBuffer, processAudioSpeedPitch } from '../utils/audioDsp';
 
@@ -32,17 +29,13 @@ interface DecodedPcm {
 interface UseWalkmanAudioOptions {
   session: BookSession | null;
   activeChapterIndex: number;
-  engineMode: VoiceEngineMode;
   neuralVoiceId: NeuralVoiceId;
-  geminiVoiceId: GeminiVoiceName;
-  geminiStyleId: StyleId;
   speed: number;
   pitchSemitones: number;
   volume: number;
   muted: boolean;
   onChapterIndexChange: (index: number) => void;
   onBeforePlayChapter?: (chapterIndex: number) => Promise<ChapterItem | null>;
-  onQuotaReached: (message: string) => void;
   onError: (message: string) => void;
 }
 
@@ -74,17 +67,13 @@ export interface WalkmanAudioController {
 export function useWalkmanAudio({
   session,
   activeChapterIndex,
-  engineMode,
   neuralVoiceId,
-  geminiVoiceId,
-  geminiStyleId,
   speed,
   pitchSemitones,
   volume,
   muted,
   onChapterIndexChange,
   onBeforePlayChapter,
-  onQuotaReached,
   onError,
 }: UseWalkmanAudioOptions): WalkmanAudioController {
   const [transportState, setTransportState] = useState<TransportState>('stopped');
@@ -98,7 +87,7 @@ export function useWalkmanAudio({
   const pcmCacheRef = useRef<WeakMap<ArrayBuffer, DecodedPcm>>(new WeakMap());
   const inflightFetchesRef = useRef<Map<string, Promise<CachedSegmentAudio>>>(new Map());
 
-  // Unified Web Audio API refs (used by both Neural Unlimited & Gemini HD engines)
+  // Unified Web Audio API refs
   const audioCtxRef = useRef<AudioContext | null>(null);
   const sourceRef = useRef<AudioBufferSourceNode | null>(null);
   const gainRef = useRef<GainNode | null>(null);
@@ -122,34 +111,26 @@ export function useWalkmanAudio({
     session,
     activeChapterIndex,
     activeSegmentIndex,
-    engineMode,
     neuralVoiceId,
-    geminiVoiceId,
-    geminiStyleId,
     speed,
     pitchSemitones,
     volume,
     muted,
     onChapterIndexChange,
     onBeforePlayChapter,
-    onQuotaReached,
     onError,
   });
   latestRef.current = {
     session,
     activeChapterIndex,
     activeSegmentIndex,
-    engineMode,
     neuralVoiceId,
-    geminiVoiceId,
-    geminiStyleId,
     speed,
     pitchSemitones,
     volume,
     muted,
     onChapterIndexChange,
     onBeforePlayChapter,
-    onQuotaReached,
     onError,
   };
 
@@ -241,9 +222,8 @@ export function useWalkmanAudio({
       translationStatus: string,
       charCount: number,
       segIdx: number,
-      mode: VoiceEngineMode,
       voiceKey: string
-    ) => `${sessionId}|${chapterId}|${translationStatus}|${charCount}|${segIdx}|${mode}|${voiceKey}`,
+    ) => `${sessionId}|${chapterId}|${translationStatus}|${charCount}|${segIdx}|neural|${voiceKey}`,
     []
   );
 
@@ -255,10 +235,7 @@ export function useWalkmanAudio({
     ): Promise<CachedSegmentAudio> => {
       const {
         session: sess,
-        engineMode: mode,
         neuralVoiceId: nVoice,
-        geminiVoiceId: gVoice,
-        geminiStyleId: gStyle,
       } = latestRef.current;
 
       const sessId = sess?.id ?? 'ephemeral';
@@ -267,14 +244,13 @@ export function useWalkmanAudio({
         throw new Error('Segment audio introuvable.');
       }
 
-      const voiceKey = mode === 'neural' ? nVoice : `${gVoice}:${gStyle}`;
+      const voiceKey = nVoice;
       const key = getCacheKey(
         sessId,
         chapter.id,
         chapter.translationStatus,
         chapter.charCount,
         segmentIndex,
-        mode,
         voiceKey
       );
 
@@ -285,70 +261,31 @@ export function useWalkmanAudio({
       if (inflight) return inflight;
 
       const reqPromise = (async (): Promise<CachedSegmentAudio> => {
-        if (mode === 'neural') {
-          const response = await fetch('/api/tts-neural', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            signal,
-            body: JSON.stringify({
-              text: segmentText,
-              voiceName: nVoice,
-            }),
-          });
-
-          const payload = (await response.json().catch(() => ({}))) as {
-            audioBase64?: string;
-            mimeType?: string;
-            error?: string;
-          };
-
-          if (!response.ok || !payload.audioBase64) {
-            throw new Error(
-              payload.error || 'Échec de la synthèse vocale neuronale illimitée.'
-            );
-          }
-
-          const result: CachedSegmentAudio = {
-            rawBytes: base64ToArrayBuffer(payload.audioBase64),
-            mimeType: payload.mimeType === 'audio/wav' ? 'audio/wav' : 'audio/mpeg',
-          };
-          audioCacheRef.current.set(key, result);
-          return result;
-        }
-
-        // Gemini HD engine
-        const response = await fetch('/api/tts', {
+        const response = await fetch('/api/tts-neural', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           signal,
           body: JSON.stringify({
             text: segmentText,
-            voiceName: gVoice,
-            styleId: gStyle,
+            voiceName: nVoice,
           }),
         });
 
         const payload = (await response.json().catch(() => ({}))) as {
           audioBase64?: string;
+          mimeType?: string;
           error?: string;
         };
 
-        if (response.status === 429) {
-          const err = new Error(
-            payload.error ||
-              'Quota Gemini temporairement atteint. Vous pouvez continuer immédiatement avec les voix neuronales illimitées.'
-          );
-          (err as Error & { isQuota?: boolean }).isQuota = true;
-          throw err;
-        }
-
         if (!response.ok || !payload.audioBase64) {
-          throw new Error(payload.error || 'Échec de la synthèse vocale Gemini.');
+          throw new Error(
+            payload.error || 'Échec de la synthèse vocale neuronale illimitée.'
+          );
         }
 
         const result: CachedSegmentAudio = {
           rawBytes: base64ToArrayBuffer(payload.audioBase64),
-          mimeType: 'audio/wav',
+          mimeType: payload.mimeType === 'audio/wav' ? 'audio/wav' : 'audio/mpeg',
         };
         audioCacheRef.current.set(key, result);
         return result;
@@ -543,14 +480,8 @@ export function useWalkmanAudio({
 
         setTransportState('stopped');
         setVuLevel(0);
-        const typed = err as Error & { isQuota?: boolean };
-        if (typed.isQuota) {
-          latestRef.current.onQuotaReached(typed.message);
-        } else {
-          latestRef.current.onError(
-            typed.message || 'Impossible de lire ce segment audio.'
-          );
-        }
+        const message = err instanceof Error ? err.message : 'Impossible de lire ce segment audio.';
+        latestRef.current.onError(message);
       }
     },
     [decodeAudioToMonoPcm, fetchSegmentAudio, playPcmBuffer, stopAllHardware]
@@ -566,7 +497,7 @@ export function useWalkmanAudio({
     if (muted) setVuLevel(0);
   }, [volume, muted]);
 
-  // Live speed/pitch reprocessing while playing (both Neural Unlimited and Gemini HD!)
+  // Live speed/pitch reprocessing while playing
   useEffect(() => {
     if (stateRef.current !== 'playing') return;
     if (!activePcmRef.current || !audioCtxRef.current) return;
@@ -610,12 +541,10 @@ export function useWalkmanAudio({
     }
   }, [session?.id, stopAllHardware]);
 
-  // Restart current segment cleanly when switching engine or voice while playing
-  const prevVoiceSignatureRef = useRef<string>(
-    `${engineMode}|${neuralVoiceId}|${geminiVoiceId}|${geminiStyleId}`
-  );
+  // Restart current segment cleanly when switching voice while playing
+  const prevVoiceSignatureRef = useRef<string>(neuralVoiceId);
   useEffect(() => {
-    const sig = `${engineMode}|${neuralVoiceId}|${geminiVoiceId}|${geminiStyleId}`;
+    const sig = neuralVoiceId;
     if (prevVoiceSignatureRef.current !== sig) {
       prevVoiceSignatureRef.current = sig;
       const wasPlaying = stateRef.current === 'playing' || stateRef.current === 'buffering';
@@ -630,7 +559,7 @@ export function useWalkmanAudio({
         );
       }
     }
-  }, [engineMode, neuralVoiceId, geminiVoiceId, geminiStyleId, startSegmentPlayback, stopAllHardware]);
+  }, [neuralVoiceId, startSegmentPlayback, stopAllHardware]);
 
   // Cleanup on unmount
   useEffect(() => {

@@ -16,7 +16,6 @@ import { sanitizeTextForSpeech, stripParasiticCharacters } from './src/utils/spe
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-const ALLOWED_VOICES = new Set(['Kore', 'Zephyr', 'Puck', 'Charon', 'Fenrir']);
 const ALLOWED_NEURAL_VOICES = new Set([
   'fr-FR-DeniseNeural',
   'fr-FR-HenriNeural',
@@ -24,17 +23,6 @@ const ALLOWED_NEURAL_VOICES = new Set([
   'fr-FR-RemyMultilingualNeural',
   'fr-FR-EloiseNeural',
 ]);
-
-const STYLE_PROMPTS: Record<string, string> = {
-  naturel:
-    'Voix française parfaitement naturelle, diction claire et articulée, intonation fluide et chaleureuse.',
-  journal:
-    'Présentateur radio français clair et posé, articulation précise, rythme journalistique équilibré.',
-  narratif:
-    'Conteur français expressif et posé, pauses respirées naturelles, lecture littéraire immersive.',
-  didactique:
-    'Voix pédagogique française très claire, rythme calme et distinct, prononciation soignée de chaque syllabe.',
-};
 
 function splitFrenchTextIntoChunks(text: string, maxChars = 1400): string[] {
   const cleaned = text.trim();
@@ -96,53 +84,6 @@ function splitFrenchTextIntoChunks(text: string, maxChars = 1400): string[] {
   return chunks.length > 0 ? chunks : [cleaned];
 }
 
-function extractPcmFromWav(wavBuffer: Buffer): {
-  pcm: Buffer;
-  sampleRate: number;
-  numChannels: number;
-  bitsPerSample: number;
-} {
-  if (
-    wavBuffer.length >= 44 &&
-    wavBuffer.toString('ascii', 0, 4) === 'RIFF' &&
-    wavBuffer.toString('ascii', 8, 12) === 'WAVE'
-  ) {
-    let offset = 12;
-    let sampleRate = 24000;
-    let numChannels = 1;
-    let bitsPerSample = 16;
-
-    while (offset + 8 <= wavBuffer.length) {
-      const chunkId = wavBuffer.toString('ascii', offset, offset + 4);
-      const chunkSize = wavBuffer.readUInt32LE(offset + 4);
-      const dataStart = offset + 8;
-
-      if (chunkId === 'fmt ' && dataStart + 16 <= wavBuffer.length) {
-        numChannels = wavBuffer.readUInt16LE(dataStart + 2);
-        sampleRate = wavBuffer.readUInt32LE(dataStart + 4);
-        bitsPerSample = wavBuffer.readUInt16LE(dataStart + 14);
-      } else if (chunkId === 'data') {
-        const end = Math.min(dataStart + chunkSize, wavBuffer.length);
-        return {
-          pcm: wavBuffer.subarray(dataStart, end),
-          sampleRate,
-          numChannels,
-          bitsPerSample,
-        };
-      }
-
-      offset = dataStart + chunkSize + (chunkSize % 2);
-    }
-  }
-
-  return {
-    pcm: wavBuffer,
-    sampleRate: 24000,
-    numChannels: 1,
-    bitsPerSample: 16,
-  };
-}
-
 function buildWavBuffer(
   pcmData: Buffer,
   sampleRate: number,
@@ -168,68 +109,6 @@ function buildWavBuffer(
   header.writeUInt32LE(pcmData.length, 40);
 
   return Buffer.concat([header, pcmData]);
-}
-
-async function generateChunkWithRetry(
-  ai: GoogleGenAI,
-  text: string,
-  voiceName: string,
-  stylePrompt: string,
-  maxRetries = 2
-): Promise<Buffer> {
-  let lastError: unknown;
-
-  for (let attempt = 0; attempt <= maxRetries; attempt++) {
-    try {
-      const response = await ai.models.generateContent({
-        model: 'gemini-3.8-flash-lite-tts',
-        contents: [
-          {
-            role: 'user',
-            parts: [
-              {
-                text,
-                speechMetadata: {
-                  style: stylePrompt,
-                },
-              },
-            ],
-          },
-        ],
-        config: {
-          responseModalities: ['AUDIO'],
-          speechConfig: {
-            voiceConfig: {
-              prebuiltVoiceConfig: { voiceName },
-            },
-          },
-        },
-      });
-
-      const base64Audio =
-        response.candidates?.[0]?.content?.parts?.[0]?.inlineData?.data;
-
-      if (!base64Audio) {
-        throw new Error("Le service vocal n'a renvoyé aucune donnée audio.");
-      }
-
-      return Buffer.from(base64Audio, 'base64');
-    } catch (error) {
-      lastError = error;
-      const errMsg = error instanceof Error ? error.message : String(error);
-      const isRetryable =
-        errMsg.includes('503') ||
-        errMsg.includes('500') ||
-        errMsg.includes('UNAVAILABLE') ||
-        errMsg.includes('timeout');
-      if (!isRetryable || attempt === maxRetries) {
-        break;
-      }
-      await new Promise((resolve) => setTimeout(resolve, 600 * Math.pow(2, attempt)));
-    }
-  }
-
-  throw lastError;
 }
 
 function sanitizeTextForNeuralSsml(text: string): string {
@@ -580,7 +459,7 @@ async function createServer() {
       console.error('Erreur /api/tts-neural:', error);
       res.status(502).json({
         error:
-          'Impossible de synthétiser la voix neuronale pour le moment. Réessayez ou basculez sur Voix Gemini HD.',
+          'Impossible de synthétiser la voix neuronale pour le moment. Réessayez dans quelques instants.',
       });
     }
   });
@@ -712,121 +591,6 @@ async function createServer() {
       console.error('Erreur /api/translate:', error);
       res.status(502).json({
         error: 'Impossible de traduire ce chapitre pour le moment. Réessayez dans un instant.',
-      });
-    }
-  });
-
-  app.post('/api/tts', async (req, res) => {
-    try {
-      const apiKey = process.env.GEMINI_API_KEY;
-      if (!apiKey) {
-        res.status(500).json({
-          error:
-            "La clé API Gemini n'est pas configurée côté serveur. Vérifiez les paramètres dans Settings > Secrets.",
-        });
-        return;
-      }
-
-      const rawText = typeof req.body?.text === 'string' ? req.body.text.trim() : '';
-      const voiceName =
-        typeof req.body?.voiceName === 'string' && ALLOWED_VOICES.has(req.body.voiceName)
-          ? req.body.voiceName
-          : 'Kore';
-      const styleId =
-        typeof req.body?.styleId === 'string' && STYLE_PROMPTS[req.body.styleId]
-          ? req.body.styleId
-          : 'naturel';
-
-      if (!rawText) {
-        res.status(400).json({
-          error: 'Veuillez saisir un texte en français avant de lancer la synthèse.',
-        });
-        return;
-      }
-
-      if (rawText.length > 5000) {
-        res.status(400).json({
-          error: 'Le texte dépasse la limite maximale de 5 000 caractères par cassette.',
-        });
-        return;
-      }
-
-      const ai = new GoogleGenAI({
-        apiKey,
-        apiVersion: 'v1beta',
-        httpOptions: {
-          headers: {
-            'User-Agent': 'aistudio-build',
-          },
-        },
-      });
-
-      const stylePrompt = STYLE_PROMPTS[styleId];
-      const spokenText = sanitizeTextForSpeech(rawText);
-      if (!spokenText) {
-        const silentPcm = Buffer.alloc(24000 * 2 * 0.25); // 250ms clean silence
-        const silentWav = buildWavBuffer(silentPcm, 24000, 1, 16);
-        res.json({
-          audioBase64: silentWav.toString('base64'),
-          mimeType: 'audio/wav',
-        });
-        return;
-      }
-
-      const chunks = splitFrenchTextIntoChunks(spokenText, 1400);
-
-      let finalWavBuffer: Buffer;
-      if (chunks.length === 1) {
-        finalWavBuffer = await generateChunkWithRetry(ai, chunks[0], voiceName, stylePrompt);
-      } else {
-        const pcmSegments: Buffer[] = [];
-        let sampleRate = 24000;
-        let numChannels = 1;
-        let bitsPerSample = 16;
-
-        for (const chunk of chunks) {
-          const wav = await generateChunkWithRetry(ai, chunk, voiceName, stylePrompt);
-          const extracted = extractPcmFromWav(wav);
-          sampleRate = extracted.sampleRate;
-          numChannels = extracted.numChannels;
-          bitsPerSample = extracted.bitsPerSample;
-          pcmSegments.push(extracted.pcm);
-        }
-
-        finalWavBuffer = buildWavBuffer(
-          Buffer.concat(pcmSegments),
-          sampleRate,
-          numChannels,
-          bitsPerSample
-        );
-      }
-
-      res.json({
-        audioBase64: finalWavBuffer.toString('base64'),
-        mimeType: 'audio/wav',
-      });
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      if (message.includes('API_KEY_INVALID') || message.includes('PERMISSION_DENIED')) {
-        console.warn('Avertissement /api/tts: clé API refusée.');
-        res.status(403).json({
-          error:
-            "Clé API Gemini refusée. Vérifiez la clé configurée dans Settings > Secrets.",
-        });
-        return;
-      }
-      if (isQuotaErrorMessage(message)) {
-        console.warn('Avertissement /api/tts: quota Gemini atteint (429).');
-        res.status(429).json({
-          quotaExceeded: true,
-          error:
-            'Quota de synthèse vocale Gemini atteint. Basculez sur les voix neuronales illimitées ou sélectionnez une clé API facturée dans Settings > Secrets.',
-        });
-        return;
-      }
-      console.error('Erreur /api/tts:', error);
-      res.status(502).json({
-        error: `Impossible de synthétiser la voix : ${message}`,
       });
     }
   });
