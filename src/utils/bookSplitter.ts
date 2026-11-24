@@ -237,29 +237,37 @@ export function buildChaptersFromRawText(
   if (!normalized) return [];
 
   const lines = normalized.split('\n');
-  const detectedSections: Array<{ title: string; lines: string[] }> = [];
-  let currentSection: { title: string; lines: string[] } | null = null;
-  let headingHits = 0;
-
-  for (const rawLine of lines) {
+  const isChapterHeading = (rawLine: string) => {
     const trimmed = rawLine.trim();
-    if (trimmed && trimmed.length <= 100 && CHAPTER_HEADING_REGEX.test(trimmed)) {
-      headingHits++;
-      if (currentSection && currentSection.lines.join('\n').trim()) {
-        detectedSections.push(currentSection);
-      }
-      const cleanHeading = trimmed.replace(/^#{1,3}\s+/, '').trim();
-      currentSection = { title: cleanHeading, lines: [] };
-    } else {
-      if (!currentSection) {
-        currentSection = { title: 'Ouverture', lines: [] };
-      }
-      currentSection.lines.push(rawLine);
-    }
-  }
+    return Boolean(trimmed && trimmed.length <= 100 && CHAPTER_HEADING_REGEX.test(trimmed));
+  };
+  const headingHits = lines.reduce(
+    (hits, rawLine) => hits + (isChapterHeading(rawLine) ? 1 : 0),
+    0
+  );
+  const detectedSections: Array<{ title: string; lines: string[] }> = [];
 
-  if (currentSection && currentSection.lines.join('\n').trim()) {
-    detectedSections.push(currentSection);
+  if (headingHits >= 2) {
+    let currentSection: { title: string; lines: string[] } | null = null;
+    for (const rawLine of lines) {
+      const trimmed = rawLine.trim();
+      if (isChapterHeading(trimmed)) {
+        if (currentSection && currentSection.lines.join('\n').trim()) {
+          detectedSections.push(currentSection);
+        }
+        const cleanHeading = trimmed.replace(/^#{1,3}\s+/, '').trim();
+        currentSection = { title: cleanHeading, lines: [] };
+      } else {
+        if (!currentSection) {
+          currentSection = { title: 'Ouverture', lines: [] };
+        }
+        currentSection.lines.push(rawLine);
+      }
+    }
+
+    if (currentSection && currentSection.lines.join('\n').trim()) {
+      detectedSections.push(currentSection);
+    }
   }
 
   const finalRawChapters: Array<{ title: string; text: string }> = [];

@@ -6,6 +6,10 @@ import {
   buildChaptersFromRawText,
   createBookSession,
 } from './bookSplitter';
+import {
+  getDocumentTextSizeError,
+  getImportFileSizeError,
+} from './documentLimits';
 import { parseEpubArrayBuffer } from './epubParser';
 
 pdfjsLib.GlobalWorkerOptions.workerSrc = pdfWorkerUrl;
@@ -20,61 +24,69 @@ async function parsePdfFile(
 ): Promise<BookSession> {
   const arrayBuffer = await file.arrayBuffer();
   const loadingTask = pdfjsLib.getDocument({ data: new Uint8Array(arrayBuffer) });
-  const pdf = await loadingTask.promise;
 
-  const pageTexts: string[] = [];
-  const totalPages = pdf.numPages;
+  try {
+    const pdf = await loadingTask.promise;
+    const pageTexts: string[] = [];
+    const totalPages = pdf.numPages;
+    let extractedCharacters = 0;
 
-  for (let pageNum = 1; pageNum <= totalPages; pageNum++) {
-    if (onProgress && (pageNum === 1 || pageNum % 5 === 0 || pageNum === totalPages)) {
-      onProgress(`Extraction PDF : page ${pageNum} / ${totalPages}…`);
-    }
-    const page = await pdf.getPage(pageNum);
-    const textContent = await page.getTextContent();
-
-    let lastY: number | null = null;
-    const lines: string[] = [];
-    let currentLine = '';
-
-    for (const item of textContent.items) {
-      if (!('str' in item)) continue;
-      const str = item.str;
-      const y = Array.isArray(item.transform) ? Math.round(item.transform[5]) : null;
-
-      if (lastY !== null && y !== null && Math.abs(y - lastY) > 6) {
-        if (currentLine.trim()) lines.push(currentLine.trim());
-        currentLine = str;
-      } else {
-        currentLine += currentLine && str && !currentLine.endsWith(' ') && !str.startsWith(' ')
-          ? ` ${str}`
-          : str;
+    for (let pageNum = 1; pageNum <= totalPages; pageNum++) {
+      if (onProgress && (pageNum === 1 || pageNum % 5 === 0 || pageNum === totalPages)) {
+        onProgress(`Extraction PDF : page ${pageNum} / ${totalPages}…`);
       }
-      if (y !== null) lastY = y;
+      const page = await pdf.getPage(pageNum);
+      const textContent = await page.getTextContent();
+
+      let lastY: number | null = null;
+      const lines: string[] = [];
+      let currentLine = '';
+
+      for (const item of textContent.items) {
+        if (!('str' in item)) continue;
+        const str = item.str;
+        const y = Array.isArray(item.transform) ? Math.round(item.transform[5]) : null;
+
+        if (lastY !== null && y !== null && Math.abs(y - lastY) > 6) {
+          if (currentLine.trim()) lines.push(currentLine.trim());
+          currentLine = str;
+        } else {
+          currentLine += currentLine && str && !currentLine.endsWith(' ') && !str.startsWith(' ')
+            ? ` ${str}`
+            : str;
+        }
+        if (y !== null) lastY = y;
+      }
+
+      if (currentLine.trim()) lines.push(currentLine.trim());
+      const pageText = lines.join('\n').trim();
+      if (pageText) {
+        extractedCharacters += pageText.length;
+        const sizeError = getDocumentTextSizeError(extractedCharacters);
+        if (sizeError) throw new Error(sizeError);
+        pageTexts.push(pageText);
+      }
     }
 
-    if (currentLine.trim()) lines.push(currentLine.trim());
-    const pageText = lines.join('\n').trim();
-    if (pageText) {
-      pageTexts.push(pageText);
+    const fullText = pageTexts.join('\n\n').trim();
+    if (!fullText) {
+      throw new Error(
+        "Ce PDF ne contient pas de texte sélectionnable (il s'agit peut-être d'un document scanné en images)."
+      );
     }
+
+    const baseTitle = stripFileExtension(file.name) || 'Livre PDF';
+    const chapters = buildChaptersFromRawText(fullText, baseTitle);
+
+    return createBookSession({
+      title: baseTitle,
+      source: 'pdf',
+      fileName: file.name,
+      chapters,
+    });
+  } finally {
+    await loadingTask.destroy();
   }
-
-  const fullText = pageTexts.join('\n\n').trim();
-  if (!fullText) {
-    throw new Error(
-      "Ce PDF ne contient pas de texte sélectionnable (il s'agit peut-être d'un document scanné en images)."
-    );
-  }
-
-  const baseTitle = stripFileExtension(file.name) || 'Livre PDF';
-  const chapters = buildChaptersFromRawText(fullText, baseTitle);
-
-  return createBookSession({
-    title: baseTitle,
-    source: 'pdf',
-    fileName: file.name,
-    chapters,
-  });
 }
 
 async function parseEpubFile(
@@ -100,6 +112,8 @@ async function parseTextFile(file: File): Promise<BookSession> {
   if (!text) {
     throw new Error('Le fichier texte importé est vide.');
   }
+  const sizeError = getDocumentTextSizeError(text.length);
+  if (sizeError) throw new Error(sizeError);
   const baseTitle = stripFileExtension(file.name) || 'Document texte';
   const chapters = buildChaptersFromRawText(text, baseTitle);
 
@@ -119,18 +133,29 @@ export async function importDocumentFile(
   onProgress?: (label: string) => void
 ): Promise<BookSession> {
   const lower = file.name.toLowerCase();
+  const isPdf = lower.endsWith('.pdf') || file.type === 'application/pdf';
+  const isEpub = lower.endsWith('.epub') || file.type === 'application/epub+zip';
+  const isText =
+    lower.endsWith('.txt') || lower.endsWith('.md') || file.type.startsWith('text/');
 
-  if (lower.endsWith('.pdf') || file.type === 'application/pdf') {
+  if (!isPdf && !isEpub && !isText) {
+    throw new Error(
+      'Format non pris en charge. Importez un fichier PDF, EPUB ou TXT (ou collez votre texte directement).'
+    );
+  }
+
+  const fileSizeError = getImportFileSizeError(file.size);
+  if (fileSizeError) throw new Error(fileSizeError);
+
+  if (isPdf) {
     return parsePdfFile(file, onProgress);
   }
-  if (lower.endsWith('.epub') || file.type === 'application/epub+zip') {
+  if (isEpub) {
     return parseEpubFile(file, onProgress);
   }
-  if (lower.endsWith('.txt') || lower.endsWith('.md') || file.type.startsWith('text/')) {
+  if (isText) {
     return parseTextFile(file);
   }
 
-  throw new Error(
-    'Format non pris en charge. Importez un fichier PDF, EPUB ou TXT (ou collez votre texte directement).'
-  );
+  throw new Error('Impossible de déterminer le format du document.');
 }

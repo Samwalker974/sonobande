@@ -114,7 +114,9 @@ export function TextStudio({
           <p className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-[#55585e]">
             <span className="inline-flex items-center gap-1 font-medium text-[#2c5e3b]">
               <ShieldCheck className="h-3.5 w-3.5" aria-hidden="true" />
-              <span>Sauvegardé dans votre navigateur (texte seul, jamais les MP3)</span>
+              <span>
+                Bibliothèque locale (texte seul) · les gros livres restent dans l’onglet actif
+              </span>
             </span>
             <span aria-hidden="true">·</span>
             <span>PDF, EPUB, TXT ou copier-coller · Traduction EN → FR intégrée</span>
@@ -158,7 +160,7 @@ export function TextStudio({
                     : 'Importer un livre PDF, EPUB ou TXT'}
                 </p>
                 <p className="text-xs text-[#5b5e64]">
-                  Traité localement · Ajouté à votre bibliothèque du navigateur (texte uniquement)
+                  Traité localement · jusqu’à 20 Mo · les livres très volumineux ne sont pas sauvegardés
                 </p>
               </div>
             </div>

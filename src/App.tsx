@@ -43,6 +43,10 @@ import {
   setLastActiveBookId,
 } from './utils/bookStorage';
 import { importDocumentFile } from './utils/documentParser';
+import {
+  getDocumentTextSizeError,
+  MAX_AUTO_SAVED_DOCUMENT_CHARS,
+} from './utils/documentLimits';
 import { polishFrenchTitle, polishFrenchTranslation } from './utils/frenchPolish';
 import {
   buildBookmarkExcerpt,
@@ -436,6 +440,7 @@ export default function App() {
   // Continuously persist active book text, bookmarks, and automatic stop position in browser IndexedDB (never MP3s)
   useEffect(() => {
     if (!hasHydratedStorageRef.current || !session) return;
+    if (session.totalChars > MAX_AUTO_SAVED_DOCUMENT_CHARS) return;
     if (
       pendingRestorePositionRef.current &&
       pendingRestorePositionRef.current.bookId === session.id
@@ -572,6 +577,11 @@ export default function App() {
     const cleaned = draftText.trim();
     if (!cleaned) {
       setErrorMessage('Importez un fichier PDF/EPUB/TXT ou collez un texte français ou anglais.');
+      return;
+    }
+    const sizeError = getDocumentTextSizeError(cleaned.length);
+    if (sizeError) {
+      setErrorMessage(sizeError);
       return;
     }
 
@@ -901,6 +911,11 @@ export default function App() {
     // Allow 1-click MP3 export directly from pasted text without forcing an intermediate step
     if (!currentSession && draftText.trim()) {
       const cleaned = draftText.trim();
+      const sizeError = getDocumentTextSizeError(cleaned.length);
+      if (sizeError) {
+        setExportErrorMessage(sizeError);
+        return;
+      }
       const inferredTitle =
         draftTitle.trim() ||
         cleaned.split(/\n/)[0].slice(0, 56).trim() ||

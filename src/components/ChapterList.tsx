@@ -4,6 +4,8 @@ import {
   Bookmark,
   BookOpen,
   CheckCircle2,
+  ChevronLeft,
+  ChevronRight,
   Download,
   Languages,
   Loader2,
@@ -12,7 +14,7 @@ import {
   Trash2,
   X,
 } from 'lucide-react';
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import type {
   BookSession,
   BookmarkItem,
@@ -23,7 +25,10 @@ import type {
 } from '../types/walkman';
 import { formatLongDuration } from '../utils/bookSplitter';
 import { formatByteSizeFr } from '../utils/mp3Encoder';
+import { MAX_AUTO_SAVED_DOCUMENT_CHARS } from '../utils/documentLimits';
 import { ExportProgressCard } from './ExportProgressCard';
+
+const CHAPTERS_PER_PAGE = 50;
 
 interface ChapterListProps {
   session: BookSession | null;
@@ -78,6 +83,11 @@ export function ChapterList({
   onDeleteBookmark,
 }: ChapterListProps) {
   const [activeTab, setActiveTab] = useState<'chapters' | 'bookmarks'>('chapters');
+  const [chapterPage, setChapterPage] = useState(0);
+
+  useEffect(() => {
+    setChapterPage(Math.floor(activeChapterIndex / CHAPTERS_PER_PAGE));
+  }, [session?.id, activeChapterIndex]);
 
   if (!session) {
     return (
@@ -111,6 +121,11 @@ export function ChapterList({
   }
 
   const totalSegments = session.chapters.reduce((sum, c) => sum + c.segments.length, 0);
+  const pageCount = Math.max(1, Math.ceil(session.chapters.length / CHAPTERS_PER_PAGE));
+  const currentPage = Math.min(chapterPage, pageCount - 1);
+  const pageStart = currentPage * CHAPTERS_PER_PAGE;
+  const pageEnd = Math.min(pageStart + CHAPTERS_PER_PAGE, session.chapters.length);
+  const visibleChapters = session.chapters.slice(pageStart, pageEnd);
 
   return (
     <section
@@ -140,7 +155,11 @@ export function ChapterList({
               Durée estimée {formatLongDuration(session.totalEstimatedSeconds)}
             </span>
             <span aria-hidden="true">·</span>
-            <span>Sauvegardé dans le navigateur (texte seul)</span>
+            <span>
+              {session.totalChars > MAX_AUTO_SAVED_DOCUMENT_CHARS
+                ? 'Non sauvegardé (document volumineux)'
+                : 'Sauvegardé dans le navigateur (texte seul)'}
+            </span>
           </p>
         </div>
 
@@ -245,29 +264,67 @@ export function ChapterList({
         </div>
       )}
 
+      {session.totalChars > MAX_AUTO_SAVED_DOCUMENT_CHARS && (
+        <p
+          role="status"
+          className="mt-4 rounded-lg border border-[#d6c9b8] bg-[#f3ece0] px-3 py-2 text-xs text-[#6a4b31]"
+        >
+          Ce document volumineux reste lisible dans cet onglet, mais n’est pas sauvegardé automatiquement. Gardez cette page ouverte ou découpez le livre en parties plus petites.
+        </p>
+      )}
+
       {/* Tab Panel 1: Ephemeral Chapter List */}
       {activeTab === 'chapters' ? (
-        <ol
-          data-testid="chapter-list"
-          className="mt-4 divide-y divide-[#e6e1d7] rounded-xl border border-[#e0dbd0] bg-white"
-        >
-          {session.chapters.map((chapter: ChapterItem, idx: number) => {
-            const isCurrent = idx === activeChapterIndex;
-            const isNeedsTranslation = chapter.translationStatus === 'needs_translation';
-            const isTranslating = chapter.translationStatus === 'translating';
-            const isTranslated = chapter.translationStatus === 'translated';
+        <>
+          {pageCount > 1 && (
+            <div className="mt-4 flex items-center justify-between gap-3 text-xs">
+              <span className="font-mono tabular-nums text-[#55585e]">
+                Chapitres {pageStart + 1}–{pageEnd} sur {session.chapters.length}
+              </span>
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  disabled={currentPage === 0}
+                  onClick={() => setChapterPage((page) => Math.max(0, page - 1))}
+                  className="inline-flex items-center gap-1 rounded-md border border-[#cfc9bd] bg-white px-2.5 py-1.5 font-medium text-[#34373c] hover:bg-[#f1eee6] disabled:opacity-45"
+                >
+                  <ChevronLeft className="h-3.5 w-3.5" aria-hidden="true" />
+                  Précédents
+                </button>
+                <button
+                  type="button"
+                  disabled={currentPage >= pageCount - 1}
+                  onClick={() => setChapterPage((page) => Math.min(pageCount - 1, page + 1))}
+                  className="inline-flex items-center gap-1 rounded-md border border-[#cfc9bd] bg-white px-2.5 py-1.5 font-medium text-[#34373c] hover:bg-[#f1eee6] disabled:opacity-45"
+                >
+                  Suivants
+                  <ChevronRight className="h-3.5 w-3.5" aria-hidden="true" />
+                </button>
+              </div>
+            </div>
+          )}
+          <ol
+            data-testid="chapter-list"
+            className="mt-4 divide-y divide-[#e6e1d7] rounded-xl border border-[#e0dbd0] bg-white"
+          >
+            {visibleChapters.map((chapter: ChapterItem, pageIndex) => {
+              const idx = pageStart + pageIndex;
+              const isCurrent = idx === activeChapterIndex;
+              const isNeedsTranslation = chapter.translationStatus === 'needs_translation';
+              const isTranslating = chapter.translationStatus === 'translating';
+              const isTranslated = chapter.translationStatus === 'translated';
 
-            const displayTitle = isNeedsTranslation
-              ? `Chapitre ${idx + 1} (anglais — à traduire)`
-              : chapter.title;
+              const displayTitle = isNeedsTranslation
+                ? `Chapitre ${idx + 1} (anglais — à traduire)`
+                : chapter.title;
 
-            return (
-              <li
-                key={chapter.id}
-                className={`flex flex-col gap-3 px-4 py-3.5 transition-colors sm:flex-row sm:items-center sm:justify-between ${
-                  isCurrent ? 'bg-[#fbf7f2]' : 'hover:bg-[#faf8f4]'
-                }`}
-              >
+              return (
+                <li
+                  key={chapter.id}
+                  className={`flex flex-col gap-3 px-4 py-3.5 transition-colors sm:flex-row sm:items-center sm:justify-between ${
+                    isCurrent ? 'bg-[#fbf7f2]' : 'hover:bg-[#faf8f4]'
+                  }`}
+                >
                 <div className="min-w-0 flex-1">
                   <div className="flex items-baseline gap-2.5">
                     <span className="font-mono text-xs font-semibold tabular-nums text-[#7b786e]">
@@ -322,7 +379,7 @@ export function ChapterList({
                   <p className="mt-1 line-clamp-1 pl-6 text-xs text-[#6d7076]">
                     {isNeedsTranslation
                       ? 'Cliquez sur « Traduire » ou « Écouter » pour afficher ce chapitre en français.'
-                      : chapter.text}
+                      : `${chapter.text.slice(0, 180).replace(/\s+/g, ' ').trim()}${chapter.text.length > 180 ? '…' : ''}`}
                   </p>
                 </div>
 
@@ -372,10 +429,11 @@ export function ChapterList({
                     <span>MP3</span>
                   </button>
                 </div>
-              </li>
-            );
-          })}
-        </ol>
+                </li>
+              );
+            })}
+          </ol>
+        </>
       ) : (
         /* Tab Panel 2: Auto-Saved Stop Position + Manual Bookmarks */
         <div className="mt-4 space-y-3" data-testid="bookmarks-panel">

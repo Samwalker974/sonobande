@@ -1,4 +1,5 @@
 import JSZip from 'jszip';
+import { getDocumentTextSizeError } from './documentLimits';
 
 export interface ExtractedEpubBook {
   title: string;
@@ -192,6 +193,7 @@ export async function parseEpubArrayBuffer(
 
   // 5. Extract readable chapters
   const chapters: Array<{ title: string; text: string }> = [];
+  let extractedCharacters = 0;
   for (const filePath of orderedFiles) {
     const zipEntry = zip.file(filePath);
     if (!zipEntry) continue;
@@ -199,6 +201,9 @@ export async function parseEpubArrayBuffer(
     const { heading, text } = extractReadableTextFromXhtml(xhtml);
     // Skip empty/cover-only pages with fewer than 20 characters
     if (text.length < 20) continue;
+    extractedCharacters += text.length;
+    const sizeError = getDocumentTextSizeError(extractedCharacters);
+    if (sizeError) throw new Error(sizeError);
     chapters.push({
       title: heading || `Chapitre ${chapters.length + 1}`,
       text,
