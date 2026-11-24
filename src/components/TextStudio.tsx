@@ -97,7 +97,7 @@ export function TextStudio({
     <section
       id="document"
       aria-label="Importation de livre et réglages de voix"
-      className="flex h-full flex-col justify-between rounded-2xl border border-[#d4cfc4] bg-[#f7f5f0] p-5 sm:p-6"
+      className="flex h-full flex-col justify-between rounded-2xl border border-[#d4cfc4] bg-[#f7f5f0] p-4 sm:p-6"
     >
       <div className="flex flex-1 flex-col">
         {/* Header + Ephemeral Privacy Note */}

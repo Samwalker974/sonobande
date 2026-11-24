@@ -5,6 +5,7 @@ import { ChapterReader } from './components/ChapterReader';
 import { TextStudio } from './components/TextStudio';
 import { TopBar } from './components/TopBar';
 import { WalkmanDeck } from './components/WalkmanDeck';
+import { WalkmanQuickControls } from './components/WalkmanQuickControls';
 import { getNeuralVoiceById } from './constants/voices';
 import { useWalkmanAudio } from './hooks/useWalkmanAudio';
 import type {
@@ -1094,9 +1095,25 @@ export default function App() {
         onClearAllStorage={handleClearAllStorage}
       />
 
-      <main className="mx-auto max-w-[1280px] space-y-8 px-5 py-7 sm:px-8 sm:py-9">
-        <div className="grid grid-cols-1 items-stretch gap-7 lg:grid-cols-12">
-          <div className="lg:col-span-6 xl:col-span-5">
+      <WalkmanQuickControls
+        hasBook={Boolean(session && activeChapter)}
+        isPlaying={audio.transportState === 'playing'}
+        isBuffering={audio.transportState === 'buffering'}
+        isExporting={Boolean(exportProgress)}
+        canGoPrevious={activeChapterIndex > 0}
+        canGoNext={activeChapterIndex < (session?.chapters.length ?? 0) - 1}
+        onPlay={() => void audio.play()}
+        onPause={audio.pause}
+        onStop={audio.stop}
+        onRewind={audio.rewind}
+        onFastForward={audio.fastForward}
+        onPrevChapter={() => handleSelectChapter(activeChapterIndex - 1, true)}
+        onNextChapter={() => handleSelectChapter(activeChapterIndex + 1, true)}
+      />
+
+      <main className="mx-auto max-w-[1280px] space-y-6 px-4 pt-5 pb-28 sm:px-6 sm:pt-7 md:space-y-8 md:px-8 md:pt-9 md:pb-9 md:pr-20">
+        <div className="grid grid-cols-1 items-stretch gap-5 sm:gap-7 lg:grid-cols-12">
+          <div className="order-2 min-w-0 lg:order-1 lg:col-span-6 xl:col-span-5">
             <WalkmanDeck
               session={session}
               activeChapter={activeChapter}
@@ -1147,7 +1164,7 @@ export default function App() {
             />
           </div>
 
-          <div className="lg:col-span-6 xl:col-span-7">
+          <div className="order-1 min-w-0 lg:order-2 lg:col-span-6 xl:col-span-7">
             <TextStudio
               session={session}
               neuralVoiceId={neuralVoiceId}

@@ -102,7 +102,7 @@ export function ChapterReader({
       id="liseuse"
       aria-label="Liseuse française du chapitre actif"
       data-testid="chapter-reader"
-      className="rounded-2xl border border-[#d4cfc4] bg-[#f7f5f0] p-5 sm:p-6"
+      className="rounded-2xl border border-[#d4cfc4] bg-[#f7f5f0] p-4 sm:p-6"
     >
       {/* Reader Header */}
       <div className="flex flex-col gap-3 border-b border-[#e2ddd3] pb-4 sm:flex-row sm:items-start sm:justify-between">
@@ -259,7 +259,7 @@ export function ChapterReader({
         ) : (
           <div
             data-testid="reader-french-content"
-            className="max-h-[420px] overflow-y-auto rounded-xl border border-[#e0dbd0] bg-white px-5 py-5 sm:px-8 sm:py-6"
+            className="max-h-[65vh] overflow-y-auto rounded-xl border border-[#e0dbd0] bg-white px-4 py-4 sm:max-h-[420px] sm:px-8 sm:py-6"
           >
             <div className="mx-auto max-w-[70ch] space-y-3">
               {activeChapter.segments.map((segmentText, segIdx) => {

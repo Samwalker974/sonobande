@@ -210,7 +210,7 @@ export function WalkmanDeck({
       aria-label="Baladeur Walkman Sonobande"
       data-testid="walkman-deck"
       data-transport-state={transportState}
-      className="walkman-aluminum relative rounded-2xl border border-[#aba69b] p-5 sm:p-6"
+      className="walkman-aluminum relative rounded-2xl border border-[#aba69b] p-4 sm:p-6"
     >
       {/* Top Mechanical Vintage Transport Buttons */}
       <div className="mb-5 rounded-xl bg-[#25272b] p-2.5 shadow-inner">
