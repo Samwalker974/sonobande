@@ -33,6 +33,7 @@ interface TextStudioProps {
   importStatusLabel: string | null;
   autoTranslateToFrench: boolean;
   translationProgress: TranslationProgress | null;
+  browserTranslationStatus: string | null;
   errorMessage: string | null;
   onDraftTitleChange: (title: string) => void;
   onDraftTextChange: (text: string) => void;
@@ -55,6 +56,7 @@ export function TextStudio({
   importStatusLabel,
   autoTranslateToFrench,
   translationProgress,
+  browserTranslationStatus,
   errorMessage,
   onDraftTitleChange,
   onDraftTextChange,
@@ -199,7 +201,7 @@ export function TextStudio({
                 />
                 <div className="min-w-0">
                   <p className="text-xs font-semibold text-[#1c1e21]">
-                    Texte anglais détecté · traduction en français
+                    Texte anglais détecté · traduction en français sur cet appareil
                   </p>
                   <p className="mt-0.5 text-[11px] text-[#55585e]">
                     {translationProgress || translatingChapterLabels.length > 0 ? (
@@ -220,9 +222,14 @@ export function TextStudio({
                           : `${remainingToTranslate} à traduire`}
                       </>
                     ) : (
-                      'La traduction en français démarrera avec la lecture.'
+                      'La première traduction peut télécharger le modèle. Il sera ensuite conservé dans le cache du navigateur.'
                     )}
                   </p>
+                  {browserTranslationStatus && (
+                    <p role="status" className="mt-1 text-[11px] text-[#8a351a]">
+                      {browserTranslationStatus}
+                    </p>
+                  )}
                 </div>
               </div>
 

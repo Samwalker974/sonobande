@@ -54,6 +54,7 @@ import {
   IncrementalMp3Builder,
   triggerDownloadFromObjectUrl,
 } from './utils/mp3Encoder';
+import { translateInBrowser } from './utils/browserTranslation';
 import { purgeLegacyLocalData } from './utils/privacyCleanup';
 
 const INITIAL_STORAGE_METRICS: BrowserStorageMetrics = {
@@ -130,6 +131,7 @@ export default function App() {
   // English -> French translation settings & progress
   const [autoTranslateToFrench, setAutoTranslateToFrench] = useState<boolean>(true);
   const [translationProgress, setTranslationProgress] = useState<TranslationProgress | null>(null);
+  const [browserTranslationStatus, setBrowserTranslationStatus] = useState<string | null>(null);
 
   // Listening personalization
   const [speed, setSpeed] = useState<number>(1.0);
@@ -294,25 +296,10 @@ export default function App() {
       });
 
       const task = (async (): Promise<ChapterItem> => {
-        const response = await fetch('/api/translate', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+        const payload = await translateInBrowser(target.sourceTitle, target.sourceText, {
           signal,
-          body: JSON.stringify({
-            title: target.sourceTitle,
-            text: target.sourceText,
-          }),
+          onProgress: setBrowserTranslationStatus,
         });
-
-        const payload = (await response.json().catch(() => ({}))) as {
-          translatedTitle?: string;
-          translatedText?: string;
-          error?: string;
-        };
-
-        if (!response.ok || !payload.translatedText) {
-          throw new Error(payload.error || 'Impossible de traduire ce chapitre en français.');
-        }
 
         const finalTitle = polishFrenchTitle(payload.translatedTitle || target.sourceTitle);
         const finalText = polishFrenchTranslation(payload.translatedText);
@@ -375,6 +362,7 @@ export default function App() {
         });
         throw err;
       } finally {
+        setBrowserTranslationStatus(null);
         inflightTranslationsRef.current.delete(inflightKey);
       }
     },
@@ -1380,6 +1368,7 @@ export default function App() {
               importStatusLabel={importStatusLabel}
               autoTranslateToFrench={autoTranslateToFrench}
               translationProgress={translationProgress}
+              browserTranslationStatus={browserTranslationStatus}
               errorMessage={errorMessage}
               onDraftTitleChange={setDraftTitle}
               onDraftTextChange={(val) => {
