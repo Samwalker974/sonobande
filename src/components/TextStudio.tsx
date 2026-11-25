@@ -1,13 +1,11 @@
 import {
   AlertCircle,
-  BookOpen,
   Eraser,
   FileUp,
   Languages,
   Loader2,
   Play,
   ShieldCheck,
-  X,
 } from 'lucide-react';
 import { useRef, useState } from 'react';
 import {
@@ -33,7 +31,6 @@ interface TextStudioProps {
   importStatusLabel: string | null;
   autoTranslateToFrench: boolean;
   translationProgress: TranslationProgress | null;
-  browserTranslationStatus: string | null;
   errorMessage: string | null;
   onDraftTitleChange: (title: string) => void;
   onDraftTextChange: (text: string) => void;
@@ -42,7 +39,6 @@ interface TextStudioProps {
   onLoadSample: (sample: SampleScript) => void;
   onToggleAutoTranslate: () => void;
   onTranslateAllChapters: () => void;
-  onCancelTranslation: () => void;
   onClearDraft: () => void;
 }
 
@@ -56,7 +52,6 @@ export function TextStudio({
   importStatusLabel,
   autoTranslateToFrench,
   translationProgress,
-  browserTranslationStatus,
   errorMessage,
   onDraftTitleChange,
   onDraftTextChange,
@@ -65,7 +60,6 @@ export function TextStudio({
   onLoadSample,
   onToggleAutoTranslate,
   onTranslateAllChapters,
-  onCancelTranslation,
   onClearDraft,
 }: TextStudioProps) {
   const fileInputRef = useRef<HTMLInputElement | null>(null);
@@ -103,35 +97,27 @@ export function TextStudio({
       className="flex h-full flex-col justify-between rounded-2xl border border-[#d4cfc4] bg-[#f7f5f0] p-4 sm:p-6"
     >
       <div className="flex flex-1 flex-col">
-        {/* Header + Ephemeral Privacy Note */}
-        <div className="mb-4">
-          <h1 className="font-display text-2xl font-bold tracking-tight text-[#1c1e21] [text-wrap:balance]">
-            Ajouter un livre ou un texte
-          </h1>
-          <p className="mt-1 text-sm text-[#55585e]">
-            Importez un fichier ou collez votre texte, puis appuyez sur « Écouter maintenant ».
-          </p>
-          <p className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-[#55585e]">
-            <span className="inline-flex items-center gap-1 font-medium text-[#2c5e3b]">
-              <ShieldCheck className="h-3.5 w-3.5" aria-hidden="true" />
-              <span>
-                Bibliothèque locale (texte seul) · les gros livres restent dans l’onglet actif
-              </span>
+        {/* Header + concise badges */}
+        <div className="mb-3.5">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <h1 className="font-display text-xl font-bold tracking-tight text-[#1c1e21] sm:text-2xl [text-wrap:balance]">
+              Ajouter un livre ou un texte
+            </h1>
+            <span className="inline-flex items-center gap-1 rounded-full border border-[#c8d8cc] bg-[#eef5ef] px-2.5 py-0.5 text-[11px] font-medium text-[#224b2f]">
+              <ShieldCheck className="h-3 w-3" aria-hidden="true" />
+              <span>100 % local · Voix {selectedNeuralVoice.name}</span>
             </span>
-            <span aria-hidden="true">·</span>
-            <span>PDF, EPUB, TXT ou copier-coller · Traduction EN → FR intégrée</span>
+          </div>
+          <p className="mt-1 text-xs text-[#55585e] sm:text-sm">
+            Importez un fichier (PDF, EPUB, TXT) ou collez votre texte, puis lancez l&apos;écoute.
           </p>
         </div>
 
-        <div className="mb-3 flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-[#55585e]">
-          <span className="font-semibold text-[#34373c]">Voix de lecture :</span>
-          <span className="font-semibold text-[#1c1e21]">{selectedNeuralVoice.name}</span>
-          <span aria-hidden="true">·</span>
-          <span>{selectedNeuralVoice.timbre}</span>
-        </div>
-
-        {/* Local PDF / EPUB / TXT Dropzone */}
-        <div className="mt-4">
+        {/* Step 1: Local PDF / EPUB / TXT Dropzone */}
+        <div>
+          <p className="mb-1.5 text-xs font-semibold text-[#34373c]">
+            1. Importer un fichier
+          </p>
           <div
             onDragOver={(e) => {
               e.preventDefault();
@@ -139,28 +125,28 @@ export function TextStudio({
             }}
             onDragLeave={() => setIsDragging(false)}
             onDrop={handleDrop}
-            className={`flex flex-col items-center justify-between gap-3 rounded-xl border border-dashed px-4 py-3.5 transition-colors sm:flex-row ${
+            className={`flex flex-col items-center justify-between gap-3 rounded-xl border border-dashed px-4 py-3 transition-colors sm:flex-row ${
               isDragging
                 ? 'border-[#d9531e] bg-[#fbefeb]'
                 : 'border-[#bdb7aa] bg-[#f1eee6]'
             }`}
           >
             <div className="flex items-center gap-3">
-              <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-[#e4dfd4] text-[#25272b]">
+              <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-[#e4dfd4] text-[#25272b]">
                 {isImportingFile ? (
-                  <Loader2 className="h-5 w-5 animate-spin text-[#d9531e]" aria-hidden="true" />
+                  <Loader2 className="h-4 w-4 animate-spin text-[#d9531e]" aria-hidden="true" />
                 ) : (
-                  <FileUp className="h-5 w-5" aria-hidden="true" />
+                  <FileUp className="h-4 w-4" aria-hidden="true" />
                 )}
               </div>
               <div>
                 <p className="text-sm font-semibold text-[#1c1e21]">
                   {isImportingFile
                     ? importStatusLabel || 'Lecture du fichier…'
-                    : 'Importer un livre PDF, EPUB ou TXT'}
+                    : 'Glisser un PDF, EPUB ou TXT ici'}
                 </p>
                 <p className="text-xs text-[#5b5e64]">
-                  Traité localement · jusqu’à 20 Mo · les livres très volumineux ne sont pas sauvegardés
+                  Jusqu’à 20 Mo · découpage en chapitres et traduction EN → FR automatiques
                 </p>
               </div>
             </div>
@@ -227,11 +213,6 @@ export function TextStudio({
                       'La première traduction peut télécharger le modèle. Il sera ensuite conservé dans le cache du navigateur.'
                     )}
                   </p>
-                  {browserTranslationStatus && (
-                    <p role="status" className="mt-1 text-[11px] text-[#8a351a]">
-                      {browserTranslationStatus}
-                    </p>
-                  )}
                 </div>
               </div>
 
@@ -267,39 +248,6 @@ export function TextStudio({
                   )}
               </div>
             </div>
-
-            {translationProgress && (
-              <div className="mt-3 border-t border-[#e0d5c6] pt-2.5">
-                <div className="flex items-center justify-between gap-2 text-xs font-medium text-[#1c1e21]">
-                  <span className="truncate">{translationProgress.currentLabel}</span>
-                  <span className="font-mono tabular-nums shrink-0">
-                    {translationProgress.completedChapters} / {translationProgress.totalChapters}
-                  </span>
-                </div>
-                <div className="mt-1.5 h-1.5 w-full overflow-hidden rounded-full bg-[#dcd3c4]">
-                  <div
-                    className="h-full bg-[#d9531e] transition-all duration-200"
-                    style={{
-                      width: `${Math.round(
-                        (translationProgress.completedChapters /
-                          Math.max(1, translationProgress.totalChapters)) *
-                          100
-                      )}%`,
-                    }}
-                  />
-                </div>
-                <div className="mt-2 flex justify-end">
-                  <button
-                    type="button"
-                    onClick={onCancelTranslation}
-                    className="inline-flex items-center gap-1 rounded-md border border-[#c5bfb3] bg-white px-2.5 py-1 text-xs font-medium text-[#3b3e44] hover:bg-[#f4f1ea]"
-                  >
-                    <X className="h-3 w-3" aria-hidden="true" />
-                    <span>Annuler la traduction</span>
-                  </button>
-                </div>
-              </div>
-            )}
           </div>
         )}
 
@@ -311,7 +259,7 @@ export function TextStudio({
                 htmlFor="french-text-input"
                 className="text-xs font-semibold text-[#34373c]"
               >
-                Ou collez votre texte
+                2. Ou coller votre texte
               </label>
             </div>
             <div className="flex items-center gap-2.5 text-xs text-[#55585e]">
@@ -342,11 +290,11 @@ export function TextStudio({
 
           <textarea
             id="french-text-input"
-            rows={7}
+            rows={5}
             value={draftText}
             onChange={(e) => onDraftTextChange(e.target.value)}
-            placeholder="Collez ici un chapitre, un essai ou un livre complet de plusieurs heures… Les titres « Chapitre 1 », « Partie 2 », etc. sont découpés automatiquement."
-            className="min-h-[160px] w-full flex-1 resize-y rounded-xl border border-[#cfc9bd] bg-white p-3.5 text-[15px] leading-relaxed text-[#1c1e21] placeholder:text-[#8c887f] transition-colors focus:border-[#d9531e] focus:outline-none focus:ring-2 focus:ring-[#d9531e]/20"
+            placeholder="Collez ici un chapitre, un essai ou un livre complet… Les titres « Chapitre 1 », « Partie 2 », etc. sont découpés automatiquement."
+            className="min-h-[126px] w-full flex-1 resize-y rounded-xl border border-[#cfc9bd] bg-white p-3.5 text-[15px] leading-relaxed text-[#1c1e21] placeholder:text-[#8c887f] transition-colors focus:border-[#d9531e] focus:outline-none focus:ring-2 focus:ring-[#d9531e]/20"
           />
 
           <div className="mt-2.5 flex flex-wrap items-center justify-between gap-2">
@@ -392,32 +340,18 @@ export function TextStudio({
           </div>
         )}
 
-        <div className="grid grid-cols-1 gap-2.5 sm:grid-cols-2">
-          <button
-            type="button"
-            onClick={() => onLoadPastedText(true)}
-            disabled={!draftText.trim() || isImportingFile}
-            className="mech-key-orange flex min-h-[46px] items-center justify-center gap-2 rounded-xl px-4 py-2.5 text-sm font-semibold text-white focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#1c1e21] disabled:cursor-not-allowed disabled:opacity-45"
-          >
-            <Play className="h-4 w-4 fill-current" aria-hidden="true" />
-            <span>Écouter maintenant</span>
-          </button>
-
-          <button
-            type="button"
-            onClick={() => onLoadPastedText(false)}
-            disabled={!draftText.trim() || isImportingFile}
-            className="flex min-h-[46px] items-center justify-center gap-2 rounded-xl border border-[#c5bfb3] bg-white px-4 py-2.5 text-sm font-semibold text-[#1c1e21] transition-colors hover:bg-[#efece4] focus-visible:outline-2 focus-visible:outline-[#d9531e] disabled:cursor-not-allowed disabled:opacity-45"
-          >
-            <BookOpen className="h-4 w-4" aria-hidden="true" />
-            <span>
-              {session ? 'Mettre à jour les chapitres' : 'Découper en chapitres'}
-            </span>
-          </button>
-        </div>
+        <button
+          type="button"
+          onClick={() => onLoadPastedText(true)}
+          disabled={!draftText.trim() || isImportingFile}
+          className="mech-key-orange flex min-h-[46px] w-full items-center justify-center gap-2 rounded-xl px-4 py-2.5 text-sm font-semibold text-white focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#1c1e21] disabled:cursor-not-allowed disabled:opacity-45"
+        >
+          <Play className="h-4 w-4 fill-current" aria-hidden="true" />
+          <span>Écouter ce texte</span>
+        </button>
         {!draftText.trim() && (
           <p className="text-center text-xs text-[#64676d]">
-            Choisissez un fichier ou collez un texte pour commencer.
+            Choisissez un fichier ci-dessus ou collez un texte ici pour l’écouter.
           </p>
         )}
       </div>

@@ -1,13 +1,17 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
-import * as vits from '@diffusionstudio/vits-web';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { BookLibrary } from './components/BookLibrary';
 import { ChapterList } from './components/ChapterList';
 import { ChapterReader } from './components/ChapterReader';
+import { FullscreenListeningView } from './components/FullscreenListeningView';
+import { GlobalProgressBar } from './components/GlobalProgressBar';
 import { TextStudio } from './components/TextStudio';
 import { TopBar } from './components/TopBar';
 import { WalkmanDeck } from './components/WalkmanDeck';
 import { WalkmanQuickControls } from './components/WalkmanQuickControls';
-import { getNeuralVoiceById } from './constants/voices';
+import {
+  getNeuralVoiceById,
+  NEURAL_FRENCH_VOICES,
+} from './constants/voices';
 import { useWalkmanAudio } from './hooks/useWalkmanAudio';
 import type {
   BookmarkItem,
@@ -15,16 +19,18 @@ import type {
   BrowserStorageMetrics,
   ChapterItem,
   ExportProgress,
+  GlobalTaskProgress,
   NeuralVoiceId,
   ReadyMp3Download,
   SampleScript,
   SavedBookRecord,
   TranslationProgress,
+  VoiceRuntimeStatus,
 } from './types/walkman';
 import {
   DEFAULT_PAUSE_DURATION_SECONDS,
-  insertSilenceAtOffsets,
-  processAudioSpeedPitch,
+  enhanceVoiceHdFluid,
+  parseWavBuffer,
 } from './utils/audioDsp';
 import {
   applyChapterTranslation,
@@ -34,15 +40,23 @@ import {
 } from './utils/bookSplitter';
 import {
   clearAllSavedBooks,
+  clearResumePositionSnapshot,
   createSavedBookRecord,
   deleteSavedBook,
   getLastActiveBookId,
   loadAllSavedBooks,
+  loadResumePositionSnapshot,
   measureBrowserStorage,
   saveBookRecord,
+  saveResumePositionSnapshot,
   setLastActiveBookId,
 } from './utils/bookStorage';
-import { importDocumentFile } from './utils/documentParser';
+import { createBrowserMp3Session, type BrowserMp3Session } from './utils/browserMp3';
+import { synthesizeInBrowser } from './utils/browserVoice';
+import {
+  importDocumentFile,
+  type DocumentImportProgress,
+} from './utils/documentParser';
 import {
   getDocumentTextSizeError,
   MAX_AUTO_SAVED_DOCUMENT_CHARS,
@@ -55,11 +69,27 @@ import {
 } from './utils/languageDetect';
 import {
   createMp3ObjectUrl,
-  IncrementalMp3Builder,
   triggerDownloadFromObjectUrl,
 } from './utils/mp3Encoder';
 import { translateInBrowser } from './utils/browserTranslation';
 import { purgeLegacyLocalData } from './utils/privacyCleanup';
+import {
+  clearVoiceHealthEntry,
+  downloadVoiceModel,
+  inspectAllCachedVoices,
+  readVoiceHealthMap,
+  readVoiceListeningSettings,
+  removeVoiceModel,
+  supportsVoiceModelStorage,
+  writeVoiceHealthEntry,
+  writeVoiceListeningSettings,
+} from './utils/voiceStorage';
+
+const EXPORT_STEPS = [
+  { id: 1, label: 'Traduction' },
+  { id: 2, label: 'Voix & Audio' },
+  { id: 3, label: 'Fichier MP3' },
+];
 
 const INITIAL_STORAGE_METRICS: BrowserStorageMetrics = {
   booksCount: 0,
@@ -70,43 +100,45 @@ const INITIAL_STORAGE_METRICS: BrowserStorageMetrics = {
   percentUsed: null,
 };
 
-function buildDraftPreview(bookSession: BookSession): string {
-  return bookSession.totalChars > 60000
-    ? bookSession.chapters[0]?.sourceText ?? ''
-    : bookSession.chapters.map((c) => `${c.sourceTitle}\n\n${c.sourceText}`).join('\n\n');
+const FULLSCREEN_STORAGE_KEY = 'sonobande:fullscreen-listening';
+
+function createInitialVoiceStatuses(): Record<NeuralVoiceId, VoiceRuntimeStatus> {
+  const savedHealth = readVoiceHealthMap();
+  return Object.fromEntries(
+    NEURAL_FRENCH_VOICES.map((voice) => {
+      const persisted = savedHealth[voice.id];
+      return [
+        voice.id,
+        {
+          installState: 'checking',
+          healthState: persisted?.state ?? 'untested',
+          downloadPercent: 0,
+          sizeBytes: null,
+          errorMessage: persisted?.state === 'failed' ? persisted.errorMessage : null,
+        } satisfies VoiceRuntimeStatus,
+      ];
+    })
+  ) as Record<NeuralVoiceId, VoiceRuntimeStatus>;
 }
 
-async function isVoiceModelCached(voiceId: NeuralVoiceId): Promise<boolean> {
-  if (window.localStorage.getItem(`sonobande:voice:${voiceId}:installed`) === 'true') {
-    return true;
-  }
-
-  if (!navigator.storage?.getDirectory) return false;
-
+function readSavedFullscreenPreference(): boolean {
   try {
-    const originDirectory = await navigator.storage.getDirectory();
-    const piperDirectory = await originDirectory.getDirectoryHandle('piper');
-    await piperDirectory.getFileHandle(`${voiceId}.onnx`);
-    await piperDirectory.getFileHandle(`${voiceId}.onnx.json`);
-    return true;
+    return window.localStorage.getItem(FULLSCREEN_STORAGE_KEY) === 'true';
   } catch {
     return false;
   }
 }
 
-async function waitForVoiceModelCache(
-  voiceId: NeuralVoiceId,
-  attempts = 30
-): Promise<boolean> {
-  for (let attempt = 0; attempt < attempts; attempt++) {
-    if (await isVoiceModelCached(voiceId)) return true;
-    await new Promise((resolve) => window.setTimeout(resolve, 250));
+function writeSavedFullscreenPreference(enabled: boolean): void {
+  try {
+    if (enabled) {
+      window.localStorage.setItem(FULLSCREEN_STORAGE_KEY, 'true');
+    } else {
+      window.localStorage.removeItem(FULLSCREEN_STORAGE_KEY);
+    }
+  } catch {
+    // Ignore storage restriction
   }
-  return false;
-}
-
-function supportsVoiceModelStorage(): boolean {
-  return window.isSecureContext && Boolean(navigator.storage?.getDirectory);
 }
 
 export default function App() {
@@ -124,31 +156,45 @@ export default function App() {
   const [draftTitle, setDraftTitle] = useState('');
   const [draftText, setDraftText] = useState('');
 
-  const neuralVoiceId: NeuralVoiceId = 'fr_FR-siwis-medium';
-  const [voiceModelStatus, setVoiceModelStatus] = useState<
-    'checking' | 'missing' | 'downloading' | 'ready' | 'error' | 'unsupported'
-  >('checking');
+  // Restored voice & listening preferences (hydrated synchronously so reloads never lose tuning)
+  const initialVoiceSettings = useMemo(() => readVoiceListeningSettings(), []);
+
+  // Multi-voice Piper French selection, OPFS cache state & live health status
+  const [neuralVoiceId, setNeuralVoiceId] = useState<NeuralVoiceId>(
+    () => initialVoiceSettings.voiceId
+  );
+  const [voiceStatuses, setVoiceStatuses] = useState<Record<NeuralVoiceId, VoiceRuntimeStatus>>(
+    () => createInitialVoiceStatuses()
+  );
   const [showVoiceDownload, setShowVoiceDownload] = useState(false);
-  const [voiceDownloadPercent, setVoiceDownloadPercent] = useState(0);
-  const [voiceDownloadMessage, setVoiceDownloadMessage] = useState('');
 
   // English -> French translation settings & progress
-  const [autoTranslateToFrench, setAutoTranslateToFrench] = useState<boolean>(true);
+  const [autoTranslateToFrench, setAutoTranslateToFrench] = useState<boolean>(
+    () => initialVoiceSettings.autoTranslateToFrench
+  );
   const [translationProgress, setTranslationProgress] = useState<TranslationProgress | null>(null);
   const [browserTranslationStatus, setBrowserTranslationStatus] = useState<string | null>(null);
 
-  // Listening personalization
-  const [speed, setSpeed] = useState<number>(1.0);
-  const [pitchSemitones, setPitchSemitones] = useState<number>(0);
-  const [pauseDurationSeconds, setPauseDurationSeconds] = useState(
-    DEFAULT_PAUSE_DURATION_SECONDS
+  // Listening personalization (all persisted automatically in browser storage)
+  const [speed, setSpeed] = useState<number>(() => initialVoiceSettings.speed);
+  const [pitchSemitones, setPitchSemitones] = useState<number>(
+    () => initialVoiceSettings.pitchSemitones
   );
-  const [volume, setVolume] = useState<number>(0.88);
-  const [muted, setMuted] = useState<boolean>(false);
+  const [pauseDurationSeconds, setPauseDurationSeconds] = useState<number>(
+    () => initialVoiceSettings.pauseDurationSeconds
+  );
+  const [hdVoiceEnhanced, setHdVoiceEnhanced] = useState<boolean>(
+    () => initialVoiceSettings.hdVoiceEnhanced
+  );
+  const [volume, setVolume] = useState<number>(() => initialVoiceSettings.volume);
+  const [muted, setMuted] = useState<boolean>(() => initialVoiceSettings.muted);
 
-  // Import, errors & MP3 export progress
+  // Import, errors, fullscreen listening & MP3 export progress
+  const [isFullscreenListening, setIsFullscreenListening] = useState<boolean>(() =>
+    readSavedFullscreenPreference()
+  );
   const [isImportingFile, setIsImportingFile] = useState(false);
-  const [importStatusLabel, setImportStatusLabel] = useState<string | null>(null);
+  const [importProgress, setImportProgress] = useState<DocumentImportProgress | null>(null);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [exportProgress, setExportProgress] = useState<ExportProgress | null>(null);
   const [exportSuccessMessage, setExportSuccessMessage] = useState<string | null>(null);
@@ -164,7 +210,9 @@ export default function App() {
   autoTranslateRef.current = autoTranslateToFrench;
 
   const exportAbortRef = useRef<AbortController | null>(null);
+  const importAbortRef = useRef<AbortController | null>(null);
   const translationAbortRef = useRef<AbortController | null>(null);
+  const singleTranslationControllersRef = useRef<Set<AbortController>>(new Set());
   const inflightTranslationsRef = useRef<Map<string, Promise<ChapterItem>>>(new Map());
   const pendingAutoPlayRef = useRef<boolean>(false);
   const hasHydratedStorageRef = useRef<boolean>(false);
@@ -172,6 +220,7 @@ export default function App() {
     bookId: string;
     chapterIndex: number;
     segmentIndex: number;
+    offsetSeconds: number;
     autoPlay: boolean;
   } | null>(null);
 
@@ -200,18 +249,33 @@ export default function App() {
 
       if (books.length > 0) {
         const target = books.find((b) => b.id === lastActiveId) ?? books[0];
+        const snapshot = loadResumePositionSnapshot(target.id);
+        const useSnapshot = Boolean(snapshot && snapshot.updatedAt >= target.lastPosition.updatedAt);
+        const restoredChapterIdx = useSnapshot
+          ? Math.max(0, Math.min(snapshot!.chapterIndex, target.session.chapters.length - 1))
+          : target.lastPosition.chapterIndex;
+        const restoredChapter = target.session.chapters[restoredChapterIdx];
+        const maxSegmentIdx = Math.max(0, (restoredChapter?.segments.length ?? 1) - 1);
+        const restoredSegmentIdx = useSnapshot
+          ? Math.max(0, Math.min(snapshot!.segmentIndex, maxSegmentIdx))
+          : target.lastPosition.segmentIndex;
+        const restoredOffsetSeconds = useSnapshot
+          ? snapshot!.offsetSeconds
+          : target.lastPosition.offsetSeconds ?? 0;
+
         pendingRestorePositionRef.current = {
           bookId: target.id,
-          chapterIndex: target.lastPosition.chapterIndex,
-          segmentIndex: target.lastPosition.segmentIndex,
+          chapterIndex: restoredChapterIdx,
+          segmentIndex: restoredSegmentIdx,
+          offsetSeconds: restoredOffsetSeconds,
           autoPlay: false,
         };
         sessionRef.current = target.session;
         setSession(target.session);
         setBookmarks(target.bookmarks);
-        setActiveChapterIndex(target.lastPosition.chapterIndex);
-        setDraftTitle(target.session.title);
-        setDraftText(buildDraftPreview(target.session));
+        setActiveChapterIndex(restoredChapterIdx);
+      } else {
+        setIsFullscreenListening(false);
       }
 
       hasHydratedStorageRef.current = true;
@@ -223,8 +287,50 @@ export default function App() {
         URL.revokeObjectURL(readyMp3UrlRef.current);
         readyMp3UrlRef.current = null;
       }
+      if (previewAudioCtxRef.current && previewAudioCtxRef.current.state !== 'closed') {
+        void previewAudioCtxRef.current.close().catch(() => {});
+        previewAudioCtxRef.current = null;
+      }
     };
   }, []);
+
+  useEffect(() => {
+    writeSavedFullscreenPreference(isFullscreenListening);
+  }, [isFullscreenListening]);
+
+  // Persist every voice & listening setting immediately and on page unload so every reload restores exact state
+  useEffect(() => {
+    const currentSettings = {
+      voiceId: neuralVoiceId,
+      speed,
+      pitchSemitones,
+      pauseDurationSeconds,
+      hdVoiceEnhanced,
+      volume,
+      muted,
+      autoTranslateToFrench,
+    };
+    writeVoiceListeningSettings(currentSettings);
+
+    const flushSettings = () => {
+      writeVoiceListeningSettings(currentSettings);
+    };
+    window.addEventListener('pagehide', flushSettings);
+    window.addEventListener('beforeunload', flushSettings);
+    return () => {
+      window.removeEventListener('pagehide', flushSettings);
+      window.removeEventListener('beforeunload', flushSettings);
+    };
+  }, [
+    neuralVoiceId,
+    speed,
+    pitchSemitones,
+    pauseDurationSeconds,
+    hdVoiceEnhanced,
+    volume,
+    muted,
+    autoTranslateToFrench,
+  ]);
 
   useEffect(() => {
     let cancelled = false;
@@ -232,27 +338,64 @@ export default function App() {
     void (async () => {
       if (!supportsVoiceModelStorage()) {
         if (cancelled) return;
-        setVoiceModelStatus('unsupported');
-        setVoiceDownloadMessage(
-          'Le stockage des modèles vocaux exige une origine sécurisée. Ouvrez cette application sur le même ordinateur via http://localhost:3000/sonobande/ ou utilisez la version HTTPS.'
-        );
+        const unsupportedMsg =
+          'Le stockage des modèles vocaux exige une origine sécurisée (localhost ou HTTPS).';
+        setVoiceStatuses((prev) => {
+          const next = { ...prev };
+          for (const voice of NEURAL_FRENCH_VOICES) {
+            next[voice.id] = {
+              installState: 'unsupported',
+              healthState: 'failed',
+              downloadPercent: 0,
+              sizeBytes: null,
+              errorMessage: unsupportedMsg,
+            };
+          }
+          return next;
+        });
         setShowVoiceDownload(true);
         return;
       }
 
       try {
-        const storedVoice = await isVoiceModelCached(neuralVoiceId);
+        const cachedMap = await inspectAllCachedVoices();
         if (cancelled) return;
 
-        if (storedVoice) {
-          setVoiceModelStatus('ready');
-        } else {
-          setVoiceModelStatus('missing');
+        let anyInstalled = false;
+        let firstInstalledId: NeuralVoiceId | null = null;
+        setVoiceStatuses((prev) => {
+          const next = { ...prev };
+          for (const voice of NEURAL_FRENCH_VOICES) {
+            const info = cachedMap[voice.id];
+            if (info?.installed) {
+              anyInstalled = true;
+              if (!firstInstalledId) firstInstalledId = voice.id;
+            } else {
+              clearVoiceHealthEntry(voice.id);
+            }
+            next[voice.id] = {
+              ...prev[voice.id],
+              installState: info?.installed ? 'installed' : 'missing',
+              healthState: info?.installed ? prev[voice.id].healthState : 'untested',
+              sizeBytes: info?.sizeBytes ?? null,
+              downloadPercent: info?.installed ? 100 : 0,
+              errorMessage:
+                info?.installed && prev[voice.id].healthState === 'failed'
+                  ? prev[voice.id].errorMessage
+                  : null,
+            };
+          }
+          return next;
+        });
+
+        if (!cachedMap[neuralVoiceId]?.installed && firstInstalledId) {
+          setNeuralVoiceId(firstInstalledId);
+        }
+        if (!anyInstalled) {
           setShowVoiceDownload(true);
         }
       } catch {
         if (cancelled) return;
-        setVoiceModelStatus('error');
         setShowVoiceDownload(true);
       }
     })();
@@ -260,7 +403,9 @@ export default function App() {
     return () => {
       cancelled = true;
     };
-  }, [neuralVoiceId]);
+    // Run once on startup to inspect OPFS voice cache
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const translateChapter = useCallback(
     async (chapterIndex: number, signal?: AbortSignal): Promise<ChapterItem | null> => {
@@ -299,9 +444,15 @@ export default function App() {
         return updated;
       });
 
+      const ownController = signal ? null : new AbortController();
+      const effectiveSignal = signal ?? ownController?.signal;
+      if (ownController) {
+        singleTranslationControllersRef.current.add(ownController);
+      }
+
       const task = (async (): Promise<ChapterItem> => {
         const payload = await translateInBrowser(target.sourceTitle, target.sourceText, {
-          signal,
+          signal: effectiveSignal,
           onProgress: setBrowserTranslationStatus,
         });
 
@@ -366,6 +517,9 @@ export default function App() {
         });
         throw err;
       } finally {
+        if (ownController) {
+          singleTranslationControllersRef.current.delete(ownController);
+        }
         setBrowserTranslationStatus(null);
         inflightTranslationsRef.current.delete(inflightKey);
       }
@@ -398,6 +552,27 @@ export default function App() {
     [translateChapter]
   );
 
+  const handleVoiceHealthChange = useCallback(
+    (voiceId: NeuralVoiceId, state: 'working' | 'failed', errMsg?: string | null) => {
+      const normalizedErr = state === 'failed' ? errMsg || 'Erreur de synthèse vocale.' : null;
+      writeVoiceHealthEntry(voiceId, state, normalizedErr);
+      setVoiceStatuses((prev) => {
+        const current = prev[voiceId];
+        if (!current) return prev;
+        return {
+          ...prev,
+          [voiceId]: {
+            ...current,
+            installState: state === 'working' ? 'installed' : current.installState,
+            healthState: state,
+            errorMessage: normalizedErr,
+          },
+        };
+      });
+    },
+    []
+  );
+
   const audio = useWalkmanAudio({
     session,
     activeChapterIndex,
@@ -405,18 +580,21 @@ export default function App() {
     speed,
     pitchSemitones,
     pauseDurationSeconds,
+    hdVoiceEnhanced,
     volume,
     muted,
+    suspendVisualMeter: isFullscreenListening,
     onChapterIndexChange: (nextIdx) => {
       setActiveChapterIndex(nextIdx);
     },
     onBeforePlayChapter: handleBeforePlayChapter,
+    onVoiceHealthChange: handleVoiceHealthChange,
     onError: (msg) => {
       setErrorMessage(msg);
     },
   });
 
-  // Apply restored stop position (chapter + segment) or autoplay after a book session mounts
+  // Apply restored stop position (chapter + segment + exact second) or autoplay after a book session mounts
   useEffect(() => {
     if (!session || session.chapters.length === 0) return;
 
@@ -426,7 +604,8 @@ export default function App() {
       audio.jumpToLocation(
         pendingRestore.chapterIndex,
         pendingRestore.segmentIndex,
-        pendingRestore.autoPlay
+        pendingRestore.autoPlay,
+        pendingRestore.offsetSeconds
       );
       return;
     }
@@ -436,6 +615,57 @@ export default function App() {
       void audio.play(0, 0);
     }
   }, [audio, session]);
+
+  const persistedOffsetSeconds =
+    audio.transportState === 'playing'
+      ? Math.floor(audio.segmentCurrentTime)
+      : Math.round(audio.segmentCurrentTime * 10) / 10;
+
+  // Keep a synchronous resume snapshot in localStorage so even an abrupt reload (Cmd+R) mid-sentence
+  // restores the exact chapter, segment, and second.
+  useEffect(() => {
+    if (!hasHydratedStorageRef.current || !session) return;
+    if (
+      pendingRestorePositionRef.current &&
+      pendingRestorePositionRef.current.bookId === session.id
+    ) {
+      return;
+    }
+
+    saveResumePositionSnapshot(session.id, {
+      chapterIndex: activeChapterIndex,
+      segmentIndex: audio.activeSegmentIndex,
+      offsetSeconds: persistedOffsetSeconds,
+    });
+  }, [session, activeChapterIndex, audio.activeSegmentIndex, persistedOffsetSeconds]);
+
+  useEffect(() => {
+    if (!session) return;
+
+    const flushExactResumePosition = () => {
+      if (!hasHydratedStorageRef.current || !sessionRef.current) return;
+      saveResumePositionSnapshot(sessionRef.current.id, {
+        chapterIndex: activeChapterIndex,
+        segmentIndex: audio.activeSegmentIndex,
+        offsetSeconds: audio.getLiveOffsetSeconds(),
+      });
+    };
+
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === 'hidden') {
+        flushExactResumePosition();
+      }
+    };
+
+    window.addEventListener('pagehide', flushExactResumePosition);
+    window.addEventListener('beforeunload', flushExactResumePosition);
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+    return () => {
+      window.removeEventListener('pagehide', flushExactResumePosition);
+      window.removeEventListener('beforeunload', flushExactResumePosition);
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
+    };
+  }, [session, activeChapterIndex, audio.activeSegmentIndex, audio.getLiveOffsetSeconds]);
 
   // Continuously persist active book text, bookmarks, and automatic stop position in browser IndexedDB (never MP3s)
   useEffect(() => {
@@ -448,6 +678,7 @@ export default function App() {
       return;
     }
 
+    const delayMs = audio.transportState === 'playing' ? 450 : 80;
     const timer = window.setTimeout(() => {
       const existing = savedBooksRef.current.find((b) => b.id === session.id);
       const record = createSavedBookRecord({
@@ -455,6 +686,7 @@ export default function App() {
         bookmarks,
         chapterIndex: activeChapterIndex,
         segmentIndex: audio.activeSegmentIndex,
+        offsetSeconds: persistedOffsetSeconds,
         existingSavedAt: existing?.savedAt,
       });
 
@@ -477,10 +709,17 @@ export default function App() {
           // Storage quota exceeded or unavailable; keep running smoothly in RAM
         }
       })();
-    }, 80);
+    }, delayMs);
 
     return () => window.clearTimeout(timer);
-  }, [session, bookmarks, activeChapterIndex, audio.activeSegmentIndex]);
+  }, [
+    session,
+    bookmarks,
+    activeChapterIndex,
+    audio.activeSegmentIndex,
+    audio.transportState,
+    persistedOffsetSeconds,
+  ]);
 
   const activeChapter = session?.chapters[activeChapterIndex] ?? null;
   const activeSavedBook = session
@@ -518,10 +757,18 @@ export default function App() {
       findDuplicateBookmark(bookmarks, activeChapterIndex, audio.activeSegmentIndex)
   );
 
+  const abortAllTranslations = useCallback(() => {
+    translationAbortRef.current?.abort();
+    translationAbortRef.current = null;
+    for (const controller of singleTranslationControllersRef.current) {
+      controller.abort();
+    }
+    singleTranslationControllersRef.current.clear();
+  }, []);
+
   const mountNewSession = useCallback(
     (nextSession: BookSession, autoPlay: boolean) => {
-      translationAbortRef.current?.abort();
-      translationAbortRef.current = null;
+      abortAllTranslations();
       inflightTranslationsRef.current.clear();
       setTranslationProgress(null);
       setBookmarks([]);
@@ -543,33 +790,40 @@ export default function App() {
         });
       }
     },
-    [translateChapter]
+    [abortAllTranslations, translateChapter]
   );
 
   const handleImportFile = async (file: File) => {
+    importAbortRef.current?.abort();
+    const ac = new AbortController();
+    importAbortRef.current = ac;
+
     setErrorMessage(null);
     setExportSuccessMessage(null);
     setIsImportingFile(true);
-    setImportStatusLabel(`Lecture de ${file.name}…`);
+    setImportProgress({ label: `Lecture de ${file.name}…` });
 
     try {
-      const nextSession = await importDocumentFile(file, (label) => {
-        setImportStatusLabel(label);
-      });
-      setDraftTitle(nextSession.title);
-      const fullPreview =
-        nextSession.totalChars > 60000
-          ? nextSession.chapters[0]?.sourceText ?? ''
-          : nextSession.chapters.map((c) => `${c.sourceTitle}\n\n${c.sourceText}`).join('\n\n');
-      setDraftText(fullPreview);
+      const nextSession = await importDocumentFile(
+        file,
+        (progress) => {
+          setImportProgress(progress);
+        },
+        ac.signal
+      );
       mountNewSession(nextSession, false);
     } catch (err) {
-      setErrorMessage(
-        err instanceof Error ? err.message : "Impossible d'importer ce fichier."
-      );
+      if (!(err instanceof Error && err.name === 'AbortError')) {
+        setErrorMessage(
+          err instanceof Error ? err.message : "Impossible d'importer ce fichier."
+        );
+      }
     } finally {
+      if (importAbortRef.current === ac) {
+        importAbortRef.current = null;
+      }
       setIsImportingFile(false);
-      setImportStatusLabel(null);
+      setImportProgress(null);
     }
   };
 
@@ -701,7 +955,7 @@ export default function App() {
     if (autoPlay) {
       void audio.play(chapterIndex, 0);
     } else {
-      audio.stop();
+      audio.jumpToLocation(chapterIndex, 0, false, 0);
       const target = currentSession.chapters[chapterIndex];
       if (target?.translationStatus === 'needs_translation' && autoTranslateRef.current) {
         void translateChapter(chapterIndex).catch((err) => {
@@ -774,7 +1028,8 @@ export default function App() {
       audio.jumpToLocation(
         book.lastPosition.chapterIndex,
         book.lastPosition.segmentIndex,
-        autoPlay
+        autoPlay,
+        book.lastPosition.offsetSeconds ?? 0
       );
       document
         .getElementById(autoPlay ? 'lecteur' : 'liseuse')
@@ -782,8 +1037,7 @@ export default function App() {
       return;
     }
 
-    translationAbortRef.current?.abort();
-    translationAbortRef.current = null;
+    abortAllTranslations();
     inflightTranslationsRef.current.clear();
     setTranslationProgress(null);
 
@@ -791,6 +1045,7 @@ export default function App() {
       bookId: book.id,
       chapterIndex: book.lastPosition.chapterIndex,
       segmentIndex: book.lastPosition.segmentIndex,
+      offsetSeconds: book.lastPosition.offsetSeconds ?? 0,
       autoPlay,
     };
 
@@ -798,8 +1053,6 @@ export default function App() {
     setSession(book.session);
     setBookmarks(book.bookmarks);
     setActiveChapterIndex(book.lastPosition.chapterIndex);
-    setDraftTitle(book.session.title);
-    setDraftText(buildDraftPreview(book.session));
     void setLastActiveBookId(book.id);
 
     document
@@ -813,7 +1066,8 @@ export default function App() {
     audio.jumpToLocation(
       activeSavedBook.lastPosition.chapterIndex,
       activeSavedBook.lastPosition.segmentIndex,
-      autoPlay
+      autoPlay,
+      activeSavedBook.lastPosition.offsetSeconds ?? 0
     );
     document
       .getElementById(autoPlay ? 'lecteur' : 'liseuse')
@@ -821,6 +1075,7 @@ export default function App() {
   };
 
   const handleDeleteSavedBook = async (bookId: string) => {
+    clearResumePositionSnapshot(bookId);
     try {
       await deleteSavedBook(bookId);
     } catch {
@@ -834,8 +1089,7 @@ export default function App() {
     if (sessionRef.current?.id === bookId) {
       exportAbortRef.current?.abort();
       exportAbortRef.current = null;
-      translationAbortRef.current?.abort();
-      translationAbortRef.current = null;
+      abortAllTranslations();
       inflightTranslationsRef.current.clear();
       audio.clearAudioMemory();
       setTranslationProgress(null);
@@ -848,16 +1102,16 @@ export default function App() {
           bookId: nextBook.id,
           chapterIndex: nextBook.lastPosition.chapterIndex,
           segmentIndex: nextBook.lastPosition.segmentIndex,
+          offsetSeconds: nextBook.lastPosition.offsetSeconds ?? 0,
           autoPlay: false,
         };
         sessionRef.current = nextBook.session;
         setSession(nextBook.session);
         setBookmarks(nextBook.bookmarks);
         setActiveChapterIndex(nextBook.lastPosition.chapterIndex);
-        setDraftTitle(nextBook.session.title);
-        setDraftText(buildDraftPreview(nextBook.session));
         void setLastActiveBookId(nextBook.id);
       } else {
+        setIsFullscreenListening(false);
         sessionRef.current = null;
         setSession(null);
         setBookmarks([]);
@@ -873,12 +1127,15 @@ export default function App() {
   };
 
   const handleClearAllStorage = async () => {
+    clearResumePositionSnapshot();
     exportAbortRef.current?.abort();
     exportAbortRef.current = null;
-    translationAbortRef.current?.abort();
-    translationAbortRef.current = null;
+    importAbortRef.current?.abort();
+    importAbortRef.current = null;
+    abortAllTranslations();
     inflightTranslationsRef.current.clear();
     pendingRestorePositionRef.current = null;
+    setIsFullscreenListening(false);
     audio.clearAudioMemory();
     sessionRef.current = null;
     setSession(null);
@@ -955,6 +1212,7 @@ export default function App() {
     replaceReadyMp3(null);
 
     const voiceLabel = getNeuralVoiceById(neuralVoiceId).name;
+    let mp3Session: BrowserMp3Session | null = null;
 
     try {
       // Step 1/3: Prepare & translate untranslated or currently-translating English chapters
@@ -1038,8 +1296,6 @@ export default function App() {
       });
 
       const directMp3Chunks: Uint8Array[] = [];
-      let builder: IncrementalMp3Builder | null = null;
-      let sampleRate = 24000;
       let completed = 0;
 
       for (let chIdx = 0; chIdx < preparedChapters.length; chIdx++) {
@@ -1074,7 +1330,7 @@ export default function App() {
             setExportProgress({
               scope,
               stage: 'encoding',
-              stageHeadline: 'Étape 2/3 · Encodage MP3 & réglage audio',
+              stageHeadline: 'Étape 2/3 · Encodage MP3 en arrière-plan',
               detail: `Conversion MP3 128 kbps · ${segDetail}`,
               label: `Encodage MP3 — ${segDetail}`,
               completedSegments: completed,
@@ -1083,36 +1339,38 @@ export default function App() {
               totalSteps: 3,
             });
 
-            const decoded = await audio.decodeAudioToMonoPcm(segAudio);
-            sampleRate = decoded.sampleRate;
-
-            if (!builder) {
-              builder = new IncrementalMp3Builder(sampleRate, 128);
+            if (!mp3Session) {
+              mp3Session = await createBrowserMp3Session({
+                bitrateKbps: 128,
+                signal: ac.signal,
+              });
             }
 
-            const shaped = processAudioSpeedPitch(
-              decoded.samples,
-              sampleRate,
+            const dspOptions = {
+              pauseOffsets: segAudio.pauseOffsets,
               speed,
-              pitchSemitones
-            );
-            const shapedWithPauses = insertSilenceAtOffsets(
-              shaped,
-              decoded.samples.length,
-              decoded.pauseOffsets,
-              sampleRate,
+              pitchSemitones,
               pauseDurationSeconds,
-              segIdx + 1 < chapter.segments.length
-            );
-            builder.appendSamples(shapedWithPauses, sampleRate);
+              includeEndPause: segIdx + 1 < chapter.segments.length,
+              hdVoiceEnhanced,
+            };
+
+            if (segAudio.mimeType === 'audio/wav') {
+              await mp3Session.appendWav(segAudio.rawBytes, dspOptions);
+            } else {
+              const decoded = await audio.decodeAudioToMonoPcm(segAudio);
+              await mp3Session.appendPcm(decoded.samples, decoded.sampleRate, {
+                ...dspOptions,
+                pauseOffsets: decoded.pauseOffsets,
+              });
+            }
           }
 
           completed++;
-          await new Promise((resolve) => setTimeout(resolve, 0));
         }
 
-        if (builder && chIdx < preparedChapters.length - 1) {
-          builder.appendSilence(0.7);
+        if (mp3Session && chIdx < preparedChapters.length - 1) {
+          await mp3Session.appendSilence(0.7);
         }
       }
 
@@ -1122,7 +1380,7 @@ export default function App() {
           : `${currentSession.title}-integral`;
       const filename = sanitizeMp3Filename(baseName);
 
-      // Step 3/3: Package final MP3 file in RAM (never persisted in browser storage)
+      // Step 3/3: Package final MP3 file in worker RAM (never persisted in browser storage)
       setExportProgress({
         scope,
         stage: 'packaging',
@@ -1134,10 +1392,9 @@ export default function App() {
         stepIndex: 3,
         totalSteps: 3,
       });
-      await new Promise((resolve) => setTimeout(resolve, 60));
 
       let mp3Bytes: Uint8Array;
-      if (canFastConcatNeuralMp3 && directMp3Chunks.length > 0 && !builder) {
+      if (canFastConcatNeuralMp3 && directMp3Chunks.length > 0 && !mp3Session) {
         const totalLen = directMp3Chunks.reduce((sum, c) => sum + c.length, 0);
         mp3Bytes = new Uint8Array(totalLen);
         let offset = 0;
@@ -1145,8 +1402,8 @@ export default function App() {
           mp3Bytes.set(chunk, offset);
           offset += chunk.length;
         }
-      } else if (builder) {
-        mp3Bytes = builder.finalize();
+      } else if (mp3Session) {
+        mp3Bytes = await mp3Session.finalize();
       } else {
         throw new Error('Aucun audio généré pour cet export.');
       }
@@ -1168,6 +1425,7 @@ export default function App() {
         // Fallback: user can click the visible "Télécharger le MP3" button directly
       }
     } catch (err) {
+      mp3Session?.cancel();
       if (err instanceof Error && err.name === 'AbortError') {
         setExportSuccessMessage('Export MP3 annulé.');
       } else {
@@ -1182,52 +1440,328 @@ export default function App() {
     }
   };
 
+  const translatingChapterLabels = useMemo(
+    () =>
+      session?.chapters.flatMap((chapter, index) =>
+        chapter.translationStatus === 'translating' ? [`Chapitre ${index + 1}`] : []
+      ) ?? [],
+    [session]
+  );
+
   const isActiveChapterTranslating =
     activeChapter?.translationStatus === 'translating' || Boolean(translationProgress);
 
-  const handleDownloadVoiceModel = async () => {
+  const activeGlobalTask = useMemo<{
+    task: GlobalTaskProgress;
+    onCancel: () => void;
+  } | null>(() => {
+    if (exportProgress) {
+      return {
+        task: {
+          kind: 'export',
+          stage: exportProgress.stage,
+          headline: exportProgress.stageHeadline,
+          detail:
+            exportProgress.stage === 'translating' && browserTranslationStatus
+              ? `${exportProgress.detail} · ${browserTranslationStatus}`
+              : exportProgress.detail,
+          completed: exportProgress.completedSegments,
+          total: Math.max(1, exportProgress.totalSegments),
+          steps: EXPORT_STEPS,
+          activeStepIndex: exportProgress.stepIndex,
+          cancelLabel: 'Annuler',
+        },
+        onCancel: () => exportAbortRef.current?.abort(),
+      };
+    }
+
+    if (translationProgress) {
+      return {
+        task: {
+          kind: 'translation',
+          headline: translationProgress.currentLabel,
+          detail:
+            browserTranslationStatus ||
+            'Traduction locale en français dans un worker dédié…',
+          completed: translationProgress.completedChapters,
+          total: Math.max(1, translationProgress.totalChapters),
+          cancelLabel: 'Annuler',
+        },
+        onCancel: abortAllTranslations,
+      };
+    }
+
+    if (translatingChapterLabels.length > 0) {
+      return {
+        task: {
+          kind: 'translation',
+          headline: `Traduction EN → FR — ${translatingChapterLabels.join(', ')}`,
+          detail:
+            browserTranslationStatus ||
+            'Traduction locale dans le navigateur (sans appel externe)…',
+          percent: null,
+          cancelLabel: 'Annuler',
+        },
+        onCancel: abortAllTranslations,
+      };
+    }
+
+    if (isImportingFile) {
+      return {
+        task: {
+          kind: 'import',
+          headline: 'Import du document en cours',
+          detail: importProgress?.label || 'Lecture locale du fichier…',
+          completed: importProgress?.completed,
+          total: importProgress?.total,
+          percent:
+            importProgress?.completed && importProgress?.total
+              ? Math.round((importProgress.completed / importProgress.total) * 100)
+              : null,
+          cancelLabel: 'Annuler',
+        },
+        onCancel: () => importAbortRef.current?.abort(),
+      };
+    }
+
+    if (audio.bufferingProgress) {
+      const bp = audio.bufferingProgress;
+      const showCounts = bp.total > 1;
+      return {
+        task: {
+          kind: 'playback',
+          headline: bp.headline,
+          detail: bp.detail,
+          completed: showCounts ? bp.completed : undefined,
+          total: showCounts ? bp.total : undefined,
+          percent: showCounts ? Math.round((bp.completed / bp.total) * 100) : null,
+          cancelLabel: 'Annuler',
+        },
+        onCancel: audio.stop,
+      };
+    }
+
+    return null;
+  }, [
+    abortAllTranslations,
+    audio.bufferingProgress,
+    audio.stop,
+    browserTranslationStatus,
+    exportProgress,
+    importProgress,
+    isImportingFile,
+    translatingChapterLabels,
+    translationProgress,
+  ]);
+
+  const activeVoiceStatus = voiceStatuses[neuralVoiceId];
+
+  const handleDownloadVoice = useCallback(async (voiceId: NeuralVoiceId) => {
     if (!supportsVoiceModelStorage()) {
-      setVoiceModelStatus('unsupported');
-      setVoiceDownloadMessage(
-        'Le stockage des modèles vocaux exige une origine sécurisée. Ouvrez cette application sur le même ordinateur via http://localhost:3000/sonobande/ ou utilisez la version HTTPS.'
-      );
+      setVoiceStatuses((prev) => ({
+        ...prev,
+        [voiceId]: {
+          ...prev[voiceId],
+          installState: 'unsupported',
+          healthState: 'failed',
+          errorMessage:
+            'Le stockage des modèles vocaux exige une origine sécurisée (localhost ou HTTPS).',
+        },
+      }));
       return;
     }
 
-    setVoiceModelStatus('downloading');
-    setVoiceDownloadPercent(0);
-    setVoiceDownloadMessage('Préparation du téléchargement…');
+    setVoiceStatuses((prev) => ({
+      ...prev,
+      [voiceId]: {
+        ...prev[voiceId],
+        installState: 'downloading',
+        downloadPercent: 0,
+        errorMessage: null,
+      },
+    }));
 
     try {
-      await vits.download(neuralVoiceId, (progress) => {
-        const percent =
-          progress.total > 0 ? Math.round((progress.loaded / progress.total) * 100) : 0;
-        setVoiceDownloadPercent(percent);
-        setVoiceDownloadMessage(
-          percent > 0 ? `Téléchargement de la voix : ${percent}%` : 'Téléchargement de la voix…'
-        );
+      const info = await downloadVoiceModel(voiceId, (percent) => {
+        setVoiceStatuses((prev) => ({
+          ...prev,
+          [voiceId]: {
+            ...prev[voiceId],
+            installState: 'downloading',
+            downloadPercent: percent,
+          },
+        }));
       });
 
-      const isCached = await waitForVoiceModelCache(neuralVoiceId);
-      if (isCached) {
-        window.localStorage.setItem(`sonobande:voice:${neuralVoiceId}:installed`, 'true');
-        setVoiceModelStatus('ready');
-        setShowVoiceDownload(false);
-        setVoiceDownloadPercent(100);
-        setErrorMessage(null);
-      } else {
-        setVoiceModelStatus('error');
-        setVoiceDownloadMessage(
-          'Le modèle a été téléchargé mais les fichiers n’ont pas pu être vérifiés dans le stockage du navigateur.'
-        );
-      }
+      clearVoiceHealthEntry(voiceId);
+      setVoiceStatuses((prev) => ({
+        ...prev,
+        [voiceId]: {
+          ...prev[voiceId],
+          installState: 'installed',
+          healthState: 'untested',
+          downloadPercent: 100,
+          sizeBytes: info.sizeBytes,
+          errorMessage: null,
+        },
+      }));
+      setNeuralVoiceId(voiceId);
+      setShowVoiceDownload(false);
+      setErrorMessage(null);
+      const nextMetrics = await measureBrowserStorage(savedBooksRef.current);
+      setStorageMetrics(nextMetrics);
     } catch (error) {
-      setVoiceModelStatus('error');
-      setVoiceDownloadMessage(
-        error instanceof Error ? error.message : 'Impossible de télécharger la voix.'
-      );
+      const msg =
+        error instanceof Error ? error.message : 'Impossible de télécharger la voix.';
+      setVoiceStatuses((prev) => ({
+        ...prev,
+        [voiceId]: {
+          ...prev[voiceId],
+          installState: 'error',
+          healthState: 'failed',
+          downloadPercent: 0,
+          errorMessage: msg,
+        },
+      }));
     }
-  };
+  }, []);
+
+  const handleSelectOrDownloadVoice = useCallback(
+    (voiceId: NeuralVoiceId) => {
+      const current = voiceStatuses[voiceId];
+      if (!current || current.installState === 'downloading' || current.installState === 'unsupported') {
+        return;
+      }
+      if (current.installState === 'installed') {
+        setNeuralVoiceId(voiceId);
+        setErrorMessage(null);
+        return;
+      }
+      void handleDownloadVoice(voiceId);
+    },
+    [handleDownloadVoice, voiceStatuses]
+  );
+
+  const previewAudioCtxRef = useRef<AudioContext | null>(null);
+
+  const handleTestVoice = useCallback(
+    async (voiceId: NeuralVoiceId) => {
+      // Unlock an AudioContext synchronously on click so the preview plays smoothly
+      let previewCtx: AudioContext | null = null;
+      try {
+        const AudioCtx =
+          window.AudioContext ||
+          (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext;
+        if (!previewAudioCtxRef.current || previewAudioCtxRef.current.state === 'closed') {
+          previewAudioCtxRef.current = new AudioCtx();
+        }
+        previewCtx = previewAudioCtxRef.current;
+        if (previewCtx.state === 'suspended') {
+          void previewCtx.resume().catch(() => {});
+        }
+      } catch {
+        previewCtx = null;
+      }
+
+      setVoiceStatuses((prev) => ({
+        ...prev,
+        [voiceId]: {
+          ...prev[voiceId],
+          healthState: 'testing',
+          errorMessage: null,
+        },
+      }));
+
+      try {
+        const voiceName = getNeuralVoiceById(voiceId).name;
+        const wavBlob = await synthesizeInBrowser(
+          `Bonjour, ici la voix ${voiceName}. La synthèse fonctionne parfaitement.`,
+          voiceId
+        );
+        const wav = parseWavBuffer(await wavBlob.arrayBuffer());
+        if (wav.samples.length === 0) {
+          throw new Error('Aucun signal audio généré.');
+        }
+
+        const readySamples = hdVoiceEnhanced
+          ? enhanceVoiceHdFluid(wav.samples, wav.sampleRate)
+          : wav.samples;
+
+        if (previewCtx) {
+          const buffer = previewCtx.createBuffer(1, readySamples.length, wav.sampleRate);
+          buffer.copyToChannel(new Float32Array(readySamples), 0);
+          const src = previewCtx.createBufferSource();
+          const gain = previewCtx.createGain();
+          gain.gain.value = muted ? 0 : volume;
+          src.buffer = buffer;
+          src.connect(gain);
+          gain.connect(previewCtx.destination);
+          src.start();
+        }
+
+        writeVoiceHealthEntry(voiceId, 'working', null);
+        setVoiceStatuses((prev) => ({
+          ...prev,
+          [voiceId]: {
+            ...prev[voiceId],
+            installState: 'installed',
+            healthState: 'working',
+            errorMessage: null,
+          },
+        }));
+      } catch (error) {
+        const msg =
+          error instanceof Error ? error.message : 'Échec du test de synthèse vocale.';
+        writeVoiceHealthEntry(voiceId, 'failed', msg);
+        setVoiceStatuses((prev) => ({
+          ...prev,
+          [voiceId]: {
+            ...prev[voiceId],
+            healthState: 'failed',
+            errorMessage: msg,
+          },
+        }));
+      }
+    },
+    [hdVoiceEnhanced, muted, volume]
+  );
+
+  const handleDeleteVoice = useCallback(
+    async (voiceId: NeuralVoiceId) => {
+      if (voiceId === neuralVoiceId) {
+        audio.clearAudioMemory();
+      }
+
+      await removeVoiceModel(voiceId);
+
+      setVoiceStatuses((prev) => {
+        const next: Record<NeuralVoiceId, VoiceRuntimeStatus> = {
+          ...prev,
+          [voiceId]: {
+            installState: 'missing',
+            healthState: 'untested',
+            downloadPercent: 0,
+            sizeBytes: null,
+            errorMessage: null,
+          },
+        };
+
+        if (voiceId === neuralVoiceId) {
+          const fallback = NEURAL_FRENCH_VOICES.find(
+            (v) => v.id !== voiceId && next[v.id]?.installState === 'installed'
+          );
+          if (fallback) {
+            setNeuralVoiceId(fallback.id);
+          }
+        }
+        return next;
+      });
+
+      const nextMetrics = await measureBrowserStorage(savedBooksRef.current);
+      setStorageMetrics(nextMetrics);
+    },
+    [audio, neuralVoiceId]
+  );
 
   return (
     <div className="min-h-screen bg-[#ece9e2] text-[#1c1e21]">
@@ -1246,42 +1780,45 @@ export default function App() {
               Télécharger {getNeuralVoiceById(neuralVoiceId).name}
             </h2>
             <p className="mt-2 text-sm leading-relaxed text-[#55585e]">
-              {voiceModelStatus === 'unsupported'
+              {activeVoiceStatus.installState === 'unsupported'
                 ? 'Cette adresse HTTP ne permet pas au navigateur d’enregistrer le modèle vocal.'
-                : <>Le modèle Piper <span className="font-mono">fr_FR-siwis-medium</span> sera enregistré dans le stockage privé de votre navigateur. Il pourra ensuite être utilisé hors ligne.</>}
+                : <>Le modèle Piper <span className="font-mono">{neuralVoiceId}</span> sera enregistré dans le stockage privé de votre navigateur. Vous pourrez aussi télécharger ou supprimer d’autres voix françaises à tout moment.</>}
             </p>
 
-            {voiceModelStatus === 'downloading' ? (
+            {activeVoiceStatus.installState === 'downloading' ? (
               <div className="mt-5">
                 <div className="mb-2 flex items-center justify-between text-xs text-[#55585e]">
-                  <span>{voiceDownloadMessage}</span>
-                  <span className="font-mono tabular-nums">{voiceDownloadPercent}%</span>
+                  <span>Téléchargement de la voix…</span>
+                  <span className="font-mono tabular-nums">
+                    {activeVoiceStatus.downloadPercent}%
+                  </span>
                 </div>
                 <div className="h-2 overflow-hidden rounded-full bg-[#ddd8cc]">
                   <div
                     className="h-full rounded-full bg-[#d9531e] transition-[width]"
-                    style={{ width: `${voiceDownloadPercent}%` }}
+                    style={{ width: `${activeVoiceStatus.downloadPercent}%` }}
                   />
                 </div>
               </div>
-            ) : voiceModelStatus !== 'unsupported' ? (
+            ) : activeVoiceStatus.installState !== 'unsupported' ? (
               <button
                 type="button"
-                onClick={() => void handleDownloadVoiceModel()}
+                onClick={() => void handleDownloadVoice(neuralVoiceId)}
                 className="mt-5 w-full rounded-lg bg-[#d9531e] px-4 py-2.5 text-sm font-semibold text-white hover:bg-[#c24515]"
               >
-                Télécharger le modèle vocal
+                Télécharger {getNeuralVoiceById(neuralVoiceId).name}
               </button>
             ) : null}
 
-            {(voiceModelStatus === 'error' || voiceModelStatus === 'unsupported') &&
-              voiceDownloadMessage && (
+            {(activeVoiceStatus.installState === 'error' ||
+              activeVoiceStatus.installState === 'unsupported') &&
+              activeVoiceStatus.errorMessage && (
               <p className="mt-3 rounded-lg border border-[#d49a89] bg-[#fbefeb] px-3 py-2 text-xs text-[#8a280b]">
-                {voiceDownloadMessage}
+                {activeVoiceStatus.errorMessage}
               </p>
             )}
 
-            {voiceModelStatus !== 'downloading' && (
+            {activeVoiceStatus.installState !== 'downloading' && (
               <button
                 type="button"
                 onClick={() => setShowVoiceDownload(false)}
@@ -1294,174 +1831,277 @@ export default function App() {
         </div>
       )}
 
-      <TopBar
-        storageMetrics={storageMetrics}
-        hasAnyData={Boolean(savedBooks.length > 0 || session || draftText.trim())}
-        onClearAllStorage={handleClearAllStorage}
-      />
+      {isFullscreenListening ? (
+        <>
+          {activeGlobalTask && (
+            <GlobalProgressBar
+              task={activeGlobalTask.task}
+              onCancel={activeGlobalTask.onCancel}
+              darkSurface
+            />
+          )}
+          <FullscreenListeningView
+            session={session}
+            activeChapter={activeChapter}
+            activeChapterIndex={activeChapterIndex}
+            neuralVoiceId={neuralVoiceId}
+            voiceStatuses={voiceStatuses}
+            transportState={audio.transportState}
+            activeSegmentIndex={audio.activeSegmentIndex}
+            totalSegmentsInChapter={audio.totalSegmentsInChapter}
+            segmentCurrentTime={audio.segmentCurrentTime}
+            segmentDuration={audio.segmentDuration}
+            chapterProgressRatio={audio.chapterProgressRatio}
+            speed={speed}
+            pitchSemitones={pitchSemitones}
+            pauseDurationSeconds={pauseDurationSeconds}
+            hdVoiceEnhanced={hdVoiceEnhanced}
+            volume={volume}
+            muted={muted}
+            isExporting={Boolean(exportProgress)}
+            isTranslating={isActiveChapterTranslating}
+            isCurrentSegmentBookmarked={isCurrentSegmentBookmarked}
+            errorMessage={errorMessage}
+            onExitFullscreen={() => setIsFullscreenListening(false)}
+            onPlay={() => void audio.play()}
+            onPause={audio.pause}
+            onStop={audio.stop}
+            onRewind={audio.rewind}
+            onFastForward={audio.fastForward}
+            onPrevChapter={() => handleSelectChapter(activeChapterIndex - 1, true)}
+            onNextChapter={() => handleSelectChapter(activeChapterIndex + 1, true)}
+            onSelectChapter={(chapterIdx) =>
+              handleSelectChapter(chapterIdx, audio.transportState === 'playing')
+            }
+            onPrevSegment={() =>
+              audio.jumpToSegment(
+                Math.max(0, audio.activeSegmentIndex - 1),
+                audio.transportState === 'playing'
+              )
+            }
+            onNextSegment={() =>
+              audio.jumpToSegment(
+                Math.min(
+                  Math.max(0, audio.totalSegmentsInChapter - 1),
+                  audio.activeSegmentIndex + 1
+                ),
+                audio.transportState === 'playing'
+              )
+            }
+            onSeekSegment={audio.seekSegment}
+            onSpeedChange={(s) => setSpeed(Math.round(s * 100) / 100)}
+            onPitchChange={(p) => setPitchSemitones(Math.round(p * 10) / 10)}
+            onPauseDurationChange={setPauseDurationSeconds}
+            onToggleHdVoice={() => setHdVoiceEnhanced((prev) => !prev)}
+            onSelectOrDownloadVoice={handleSelectOrDownloadVoice}
+            onResetTuning={() => {
+              setSpeed(1.0);
+              setPitchSemitones(0);
+              setPauseDurationSeconds(DEFAULT_PAUSE_DURATION_SECONDS);
+            }}
+            onVolumeChange={(v) => {
+              setVolume(v);
+              if (v > 0 && muted) setMuted(false);
+            }}
+            onToggleMute={() => setMuted((m) => !m)}
+            onAddBookmark={() => handleAddBookmark()}
+            onTranslateActiveChapter={() => void handleTranslateSingleChapter(activeChapterIndex)}
+          />
+        </>
+      ) : (
+        <>
+          <TopBar
+            storageMetrics={storageMetrics}
+            hasAnyData={Boolean(savedBooks.length > 0 || session || draftText.trim())}
+            hasBook={Boolean(session && activeChapter)}
+            onEnterFullscreen={() => setIsFullscreenListening(true)}
+            onClearAllStorage={handleClearAllStorage}
+          />
 
-      <WalkmanQuickControls
-        hasBook={Boolean(session && activeChapter)}
-        isPlaying={audio.transportState === 'playing'}
-        isBuffering={audio.transportState === 'buffering'}
-        isExporting={Boolean(exportProgress)}
-        canGoPrevious={activeChapterIndex > 0}
-        canGoNext={activeChapterIndex < (session?.chapters.length ?? 0) - 1}
-        onPlay={() => void audio.play()}
-        onPause={audio.pause}
-        onStop={audio.stop}
-        onRewind={audio.rewind}
-        onFastForward={audio.fastForward}
-        onPrevChapter={() => handleSelectChapter(activeChapterIndex - 1, true)}
-        onNextChapter={() => handleSelectChapter(activeChapterIndex + 1, true)}
-      />
+          {activeGlobalTask && (
+            <GlobalProgressBar
+              task={activeGlobalTask.task}
+              onCancel={activeGlobalTask.onCancel}
+            />
+          )}
 
-      <main className="mx-auto max-w-[1280px] space-y-6 px-4 pt-5 pb-28 sm:px-6 sm:pt-7 md:space-y-8 md:px-8 md:pt-9 md:pb-9 md:pr-20">
-        <div className="grid grid-cols-1 items-stretch gap-5 sm:gap-7 lg:grid-cols-12">
-          <div className="order-2 min-w-0 lg:order-1 lg:col-span-6 xl:col-span-5">
-            <WalkmanDeck
+          <WalkmanQuickControls
+            hasBook={Boolean(session && activeChapter)}
+            isPlaying={audio.transportState === 'playing'}
+            isBuffering={audio.transportState === 'buffering'}
+            isExporting={Boolean(exportProgress)}
+            canGoPrevious={activeChapterIndex > 0}
+            canGoNext={activeChapterIndex < (session?.chapters.length ?? 0) - 1}
+            onPlay={() => void audio.play()}
+            onPause={audio.pause}
+            onStop={audio.stop}
+            onRewind={audio.rewind}
+            onFastForward={audio.fastForward}
+            onPrevChapter={() => handleSelectChapter(activeChapterIndex - 1, true)}
+            onNextChapter={() => handleSelectChapter(activeChapterIndex + 1, true)}
+            onEnterFullscreen={() => setIsFullscreenListening(true)}
+          />
+
+          <main className="mx-auto max-w-[1280px] space-y-6 px-4 pt-5 pb-28 sm:px-6 sm:pt-7 md:space-y-8 md:px-8 md:pt-8 md:pb-10 md:pr-20">
+            {/* 1. Poste principal : Walkman + Import/Collage (sur mobile : Lecteur d'abord si un livre est chargé, sinon Import d'abord) */}
+            <div className="grid grid-cols-1 items-start gap-5 sm:gap-7 lg:grid-cols-12">
+              <div
+                className={`min-w-0 lg:order-1 lg:col-span-6 xl:col-span-5 ${
+                  session ? 'order-1' : 'order-2'
+                }`}
+              >
+                <WalkmanDeck
+                  session={session}
+                  activeChapter={activeChapter}
+                  activeChapterIndex={activeChapterIndex}
+                  neuralVoiceId={neuralVoiceId}
+                  voiceStatuses={voiceStatuses}
+                  transportState={audio.transportState}
+                  activeSegmentIndex={audio.activeSegmentIndex}
+                  totalSegmentsInChapter={audio.totalSegmentsInChapter}
+                  segmentCurrentTime={audio.segmentCurrentTime}
+                  segmentDuration={audio.segmentDuration}
+                  chapterProgressRatio={audio.chapterProgressRatio}
+                  vuLevel={audio.vuLevel}
+                  speed={speed}
+                  pitchSemitones={pitchSemitones}
+                  pauseDurationSeconds={pauseDurationSeconds}
+                  hdVoiceEnhanced={hdVoiceEnhanced}
+                  volume={volume}
+                  muted={muted}
+                  isExporting={Boolean(exportProgress)}
+                  playbackErrorMessage={errorMessage}
+                  exportSuccessMessage={exportSuccessMessage}
+                  exportErrorMessage={exportErrorMessage}
+                  readyMp3={readyMp3}
+                  hasDraftText={draftText.trim().length > 0}
+                  isTranslating={isActiveChapterTranslating}
+                  isCurrentSegmentBookmarked={isCurrentSegmentBookmarked}
+                  onPlay={() => void audio.play()}
+                  onPause={audio.pause}
+                  onStop={audio.stop}
+                  onRewind={audio.rewind}
+                  onFastForward={audio.fastForward}
+                  onPrevChapter={() => handleSelectChapter(activeChapterIndex - 1, true)}
+                  onNextChapter={() => handleSelectChapter(activeChapterIndex + 1, true)}
+                  onSeekSegment={audio.seekSegment}
+                  onSpeedChange={(s) => setSpeed(Math.round(s * 100) / 100)}
+                  onPitchChange={(p) => setPitchSemitones(Math.round(p * 10) / 10)}
+                  onPauseDurationChange={setPauseDurationSeconds}
+                  onToggleHdVoice={() => setHdVoiceEnhanced((prev) => !prev)}
+                  onSelectOrDownloadVoice={handleSelectOrDownloadVoice}
+                  onTestVoice={(voiceId) => void handleTestVoice(voiceId)}
+                  onDeleteVoice={(voiceId) => void handleDeleteVoice(voiceId)}
+                  onResetTuning={() => {
+                    setSpeed(1.0);
+                    setPitchSemitones(0);
+                    setPauseDurationSeconds(DEFAULT_PAUSE_DURATION_SECONDS);
+                  }}
+                  onVolumeChange={(v) => {
+                    setVolume(v);
+                    if (v > 0 && muted) setMuted(false);
+                  }}
+                  onToggleMute={() => setMuted((m) => !m)}
+                  onAddBookmark={() => handleAddBookmark()}
+                  onEnterFullscreen={() => setIsFullscreenListening(true)}
+                  onExportChapterMp3={() => void runIncrementalMp3Export('chapter')}
+                  onExportBookMp3={() => void runIncrementalMp3Export('book')}
+                  onDismissReadyMp3={() => replaceReadyMp3(null)}
+                />
+              </div>
+
+              <div
+                className={`min-w-0 lg:order-2 lg:col-span-6 xl:col-span-7 ${
+                  session ? 'order-2' : 'order-1'
+                }`}
+              >
+                <TextStudio
+                  session={session}
+                  neuralVoiceId={neuralVoiceId}
+                  draftTitle={draftTitle}
+                  draftText={draftText}
+                  speed={speed}
+                  isImportingFile={isImportingFile}
+                  importStatusLabel={importProgress?.label ?? null}
+                  autoTranslateToFrench={autoTranslateToFrench}
+                  translationProgress={translationProgress}
+                  errorMessage={errorMessage}
+                  onDraftTitleChange={setDraftTitle}
+                  onDraftTextChange={(val) => {
+                    setDraftText(val);
+                    if (errorMessage && val.trim()) setErrorMessage(null);
+                  }}
+                  onImportFile={(file) => void handleImportFile(file)}
+                  onLoadPastedText={handleLoadPastedText}
+                  onLoadSample={handleLoadSample}
+                  onToggleAutoTranslate={() => setAutoTranslateToFrench((prev) => !prev)}
+                  onTranslateAllChapters={() => void handleTranslateAllChapters()}
+                  onClearDraft={() => {
+                    setDraftText('');
+                    setDraftTitle('');
+                    setErrorMessage(null);
+                  }}
+                />
+              </div>
+            </div>
+
+            {/* 2. Liseuse française synchronisée directement sous le Walkman */}
+            <ChapterReader
               session={session}
               activeChapter={activeChapter}
               activeChapterIndex={activeChapterIndex}
-              neuralVoiceId={neuralVoiceId}
-              transportState={audio.transportState}
               activeSegmentIndex={audio.activeSegmentIndex}
-              totalSegmentsInChapter={audio.totalSegmentsInChapter}
-              segmentCurrentTime={audio.segmentCurrentTime}
-              segmentDuration={audio.segmentDuration}
-              chapterProgressRatio={audio.chapterProgressRatio}
-              vuLevel={audio.vuLevel}
-              speed={speed}
-              pitchSemitones={pitchSemitones}
-              pauseDurationSeconds={pauseDurationSeconds}
-              volume={volume}
-              muted={muted}
-              exportProgress={exportProgress}
-              exportSuccessMessage={exportSuccessMessage}
-              exportErrorMessage={exportErrorMessage}
-              readyMp3={readyMp3}
-              hasDraftText={draftText.trim().length > 0}
-              isTranslating={isActiveChapterTranslating}
-              isCurrentSegmentBookmarked={isCurrentSegmentBookmarked}
-              onPlay={() => void audio.play()}
-              onPause={audio.pause}
-              onStop={audio.stop}
-              onRewind={audio.rewind}
-              onFastForward={audio.fastForward}
-              onPrevChapter={() => handleSelectChapter(activeChapterIndex - 1, true)}
-              onNextChapter={() => handleSelectChapter(activeChapterIndex + 1, true)}
-              onSeekSegment={audio.seekSegment}
-              onSpeedChange={(s) => setSpeed(Math.round(s * 100) / 100)}
-              onPitchChange={(p) => setPitchSemitones(Math.round(p * 10) / 10)}
-              onPauseDurationChange={setPauseDurationSeconds}
-              onResetTuning={() => {
-                setSpeed(1.0);
-                setPitchSemitones(0);
-                setPauseDurationSeconds(DEFAULT_PAUSE_DURATION_SECONDS);
-              }}
-              onVolumeChange={(v) => {
-                setVolume(v);
-                if (v > 0 && muted) setMuted(false);
-              }}
-              onToggleMute={() => setMuted((m) => !m)}
-              onAddBookmark={() => handleAddBookmark()}
-              onExportChapterMp3={() => void runIncrementalMp3Export('chapter')}
-              onExportBookMp3={() => void runIncrementalMp3Export('book')}
-              onCancelExport={() => exportAbortRef.current?.abort()}
-              onDismissReadyMp3={() => replaceReadyMp3(null)}
-            />
-          </div>
-
-          <div className="order-1 min-w-0 lg:order-2 lg:col-span-6 xl:col-span-7">
-            <TextStudio
-              session={session}
-              neuralVoiceId={neuralVoiceId}
-              draftTitle={draftTitle}
-              draftText={draftText}
-              speed={speed}
-              isImportingFile={isImportingFile}
-              importStatusLabel={importStatusLabel}
+              isPlaying={audio.transportState === 'playing'}
               autoTranslateToFrench={autoTranslateToFrench}
-              translationProgress={translationProgress}
-              browserTranslationStatus={browserTranslationStatus}
-              errorMessage={errorMessage}
-              onDraftTitleChange={setDraftTitle}
-              onDraftTextChange={(val) => {
-                setDraftText(val);
-                if (errorMessage && val.trim()) setErrorMessage(null);
-              }}
-              onImportFile={(file) => void handleImportFile(file)}
-              onLoadPastedText={handleLoadPastedText}
-              onLoadSample={handleLoadSample}
-              onToggleAutoTranslate={() => setAutoTranslateToFrench((prev) => !prev)}
-              onTranslateAllChapters={() => void handleTranslateAllChapters()}
-              onCancelTranslation={() => translationAbortRef.current?.abort()}
-              onClearDraft={() => {
-                setDraftText('');
-                setDraftTitle('');
-                setErrorMessage(null);
-              }}
+              bookmarks={bookmarks}
+              onTranslateChapter={(idx) => void handleTranslateSingleChapter(idx)}
+              onSelectSegment={(segIdx, autoPlay) => audio.jumpToSegment(segIdx, autoPlay)}
+              onAddBookmark={(note) => handleAddBookmark(note)}
+              onPrevChapter={() => handleSelectChapter(activeChapterIndex - 1, false)}
+              onNextChapter={() => handleSelectChapter(activeChapterIndex + 1, false)}
             />
-          </div>
-        </div>
 
-        {/* Browser Text-Only Book Library with Auto Stop-Position Resume */}
-        <BookLibrary
-          books={savedBooks}
-          activeBookId={session?.id ?? null}
-          onResumeBook={handleResumeBook}
-          onDeleteBook={(id) => void handleDeleteSavedBook(id)}
-        />
+            {/* 3. Chapitres & Marque-pages du livre actif */}
+            <ChapterList
+              session={session}
+              activeChapterIndex={activeChapterIndex}
+              activeSegmentIndex={audio.activeSegmentIndex}
+              isPlaying={audio.transportState === 'playing'}
+              isExporting={Boolean(exportProgress)}
+              readyMp3={readyMp3}
+              exportErrorMessage={exportErrorMessage}
+              savedPosition={activeSavedBook?.lastPosition ?? null}
+              bookmarks={bookmarks}
+              onSelectChapter={handleSelectChapter}
+              onTranslateChapter={(idx) => void handleTranslateSingleChapter(idx)}
+              onExportChapterMp3={(idx) => void runIncrementalMp3Export('chapter', idx)}
+              onExportBookMp3={() => void runIncrementalMp3Export('book')}
+              onDismissReadyMp3={() => replaceReadyMp3(null)}
+              onResumeSavedPosition={handleResumeCurrentSavedPosition}
+              onJumpToBookmark={handleJumpToBookmark}
+              onUpdateBookmarkNote={handleUpdateBookmarkNote}
+              onDeleteBookmark={handleDeleteBookmark}
+            />
 
-        {/* Synchronized French-only Chapter Reader */}
-        <ChapterReader
-          session={session}
-          activeChapter={activeChapter}
-          activeChapterIndex={activeChapterIndex}
-          activeSegmentIndex={audio.activeSegmentIndex}
-          isPlaying={audio.transportState === 'playing'}
-          autoTranslateToFrench={autoTranslateToFrench}
-          bookmarks={bookmarks}
-          onTranslateChapter={(idx) => void handleTranslateSingleChapter(idx)}
-          onSelectSegment={(segIdx, autoPlay) => audio.jumpToSegment(segIdx, autoPlay)}
-          onAddBookmark={(note) => handleAddBookmark(note)}
-          onPrevChapter={() => handleSelectChapter(activeChapterIndex - 1, false)}
-          onNextChapter={() => handleSelectChapter(activeChapterIndex + 1, false)}
-        />
+            {/* 4. Ma Bibliothèque locale pour changer de livre */}
+            <BookLibrary
+              books={savedBooks}
+              activeBookId={session?.id ?? null}
+              onResumeBook={handleResumeBook}
+              onDeleteBook={(id) => void handleDeleteSavedBook(id)}
+            />
+          </main>
 
-        {/* Chapters & Bookmarks Tabs (including auto-saved stop position) */}
-        <ChapterList
-          session={session}
-          activeChapterIndex={activeChapterIndex}
-          activeSegmentIndex={audio.activeSegmentIndex}
-          isPlaying={audio.transportState === 'playing'}
-          isExporting={Boolean(exportProgress)}
-          exportProgress={exportProgress}
-          readyMp3={readyMp3}
-          exportErrorMessage={exportErrorMessage}
-          savedPosition={activeSavedBook?.lastPosition ?? null}
-          bookmarks={bookmarks}
-          onSelectChapter={handleSelectChapter}
-          onTranslateChapter={(idx) => void handleTranslateSingleChapter(idx)}
-          onExportChapterMp3={(idx) => void runIncrementalMp3Export('chapter', idx)}
-          onExportBookMp3={() => void runIncrementalMp3Export('book')}
-          onCancelExport={() => exportAbortRef.current?.abort()}
-          onDismissReadyMp3={() => replaceReadyMp3(null)}
-          onResumeSavedPosition={handleResumeCurrentSavedPosition}
-          onJumpToBookmark={handleJumpToBookmark}
-          onUpdateBookmarkNote={handleUpdateBookmarkNote}
-          onDeleteBookmark={handleDeleteBookmark}
-        />
-      </main>
-
-      <footer className="mx-auto max-w-[1280px] border-t border-[#d8d3c8] pl-4 pr-[4.5rem] py-6 text-xs text-[#64676d] sm:pl-8 sm:pr-20">
-        <div className="flex flex-wrap items-center justify-between gap-2">
-          <span>
-            Sonobande — Lecteur Walkman · Bibliothèque locale (texte seul) · Traduction EN → FR
-          </span>
-          <span>Livres & reprise stockés dans le navigateur · MP3 jamais stockés</span>
-        </div>
-      </footer>
+          <footer className="mx-auto max-w-[1280px] border-t border-[#d8d3c8] pl-4 pr-[4.5rem] py-6 text-xs text-[#64676d] sm:pl-8 sm:pr-20">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <span>
+                Sonobande — Lecteur Walkman · Bibliothèque locale (texte seul) · Traduction EN → FR
+              </span>
+              <span>Livres & reprise stockés dans le navigateur · MP3 jamais stockés</span>
+            </div>
+          </footer>
+        </>
+      )}
     </div>
   );
 }

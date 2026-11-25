@@ -8,7 +8,7 @@ export interface DecodedWav {
   sampleRate: number;
 }
 
-export const DEFAULT_PAUSE_DURATION_SECONDS = 0.3;
+export const DEFAULT_PAUSE_DURATION_SECONDS = 0;
 
 export function insertSilenceAtOffsets(
   samples: Float32Array,
@@ -362,6 +362,140 @@ export function processAudioSpeedPitch(
   }
 
   return resampled;
+}
+
+interface BiquadCoefficients {
+  b0: number;
+  b1: number;
+  b2: number;
+  a1: number;
+  a2: number;
+}
+
+function applyBiquadFilter(
+  input: Float32Array,
+  coeff: BiquadCoefficients
+): Float32Array {
+  const output = new Float32Array(input.length);
+  let x1 = 0;
+  let x2 = 0;
+  let y1 = 0;
+  let y2 = 0;
+  const { b0, b1, b2, a1, a2 } = coeff;
+
+  for (let i = 0; i < input.length; i++) {
+    const x0 = input[i];
+    const y0 = b0 * x0 + b1 * x1 + b2 * x2 - a1 * y1 - a2 * y2;
+    output[i] = y0;
+    x2 = x1;
+    x1 = x0;
+    y2 = y1;
+    y1 = y0;
+  }
+  return output;
+}
+
+function createHighPassCoefficients(
+  freqHz: number,
+  sampleRate: number,
+  q = 0.707
+): BiquadCoefficients {
+  const omega = (2 * Math.PI * freqHz) / sampleRate;
+  const sinW = Math.sin(omega);
+  const cosW = Math.cos(omega);
+  const alpha = sinW / (2 * q);
+  const a0 = 1 + alpha;
+
+  return {
+    b0: (1 + cosW) / 2 / a0,
+    b1: -(1 + cosW) / a0,
+    b2: (1 + cosW) / 2 / a0,
+    a1: (-2 * cosW) / a0,
+    a2: (1 - alpha) / a0,
+  };
+}
+
+function createPeakingEqCoefficients(
+  freqHz: number,
+  sampleRate: number,
+  gainDb: number,
+  q = 1.0
+): BiquadCoefficients {
+  const a = Math.pow(10, gainDb / 40);
+  const omega = (2 * Math.PI * freqHz) / sampleRate;
+  const sinW = Math.sin(omega);
+  const cosW = Math.cos(omega);
+  const alpha = sinW / (2 * q);
+  const a0 = 1 + alpha / a;
+
+  return {
+    b0: (1 + alpha * a) / a0,
+    b1: (-2 * cosW) / a0,
+    b2: (1 - alpha * a) / a0,
+    a1: (-2 * cosW) / a0,
+    a2: (1 - alpha / a) / a0,
+  };
+}
+
+/**
+ * Real-time-capable studio voice mastering chain for smoother, clearer, more natural
+ * audiobook playback and MP3 export:
+ * 1) 80 Hz high-pass to remove neural sub-rumble / DC offset
+ * 2) Subtle vocal EQ (+1.4 dB warmth @ 210 Hz, -1.6 dB nasal cut @ 1050 Hz, +2.2 dB HD presence @ 3.4 kHz)
+ * 3) Gentle RMS envelope leveling + tanh soft limiter for consistent fluid dynamics
+ * 4) 10 ms edge de-click micro-fades
+ */
+export function enhanceVoiceHdFluid(
+  samples: Float32Array,
+  sampleRate: number
+): Float32Array {
+  if (samples.length === 0 || !Number.isFinite(sampleRate) || sampleRate < 8000) {
+    return samples;
+  }
+
+  let out = applyBiquadFilter(samples, createHighPassCoefficients(80, sampleRate, 0.707));
+
+  if (sampleRate >= 16000) {
+    out = applyBiquadFilter(out, createPeakingEqCoefficients(210, sampleRate, 1.4, 0.8));
+    out = applyBiquadFilter(out, createPeakingEqCoefficients(1050, sampleRate, -1.6, 1.1));
+    const presenceHz = Math.min(3400, sampleRate * 0.35);
+    out = applyBiquadFilter(out, createPeakingEqCoefficients(presenceHz, sampleRate, 2.2, 0.9));
+  }
+
+  // Smooth dynamic leveling (soft-knee studio speech compressor + gentle soft limiter)
+  const attackCoeff = Math.exp(-1 / (sampleRate * 0.012));
+  const releaseCoeff = Math.exp(-1 / (sampleRate * 0.14));
+  const threshold = 0.24;
+  const ratio = 2.6;
+  const makeupGain = 1.18;
+
+  let env = 0;
+  for (let i = 0; i < out.length; i++) {
+    const absVal = Math.abs(out[i]);
+    const coeff = absVal > env ? attackCoeff : releaseCoeff;
+    env = coeff * env + (1 - coeff) * absVal;
+
+    let gain = makeupGain;
+    if (env > threshold) {
+      const compressed = threshold + (env - threshold) / ratio;
+      gain = (compressed / env) * makeupGain;
+    }
+
+    const leveled = out[i] * gain;
+    // Soft analog-style saturation ceiling so peaks stay smooth and never hard-clip
+    const limited = Math.abs(leveled) > 0.78 ? Math.tanh(leveled * 1.12) / Math.tanh(1.12) : leveled;
+    out[i] = Number.isFinite(limited) ? Math.max(-0.98, Math.min(0.98, limited)) : 0;
+  }
+
+  // 10 ms edge fades to eliminate junction clicks between segments/phrases
+  const fadeSamples = Math.min(Math.floor(out.length / 4), Math.round(sampleRate * 0.01));
+  for (let i = 0; i < fadeSamples; i++) {
+    const ramp = i / Math.max(1, fadeSamples);
+    out[i] *= ramp;
+    out[out.length - 1 - i] *= ramp;
+  }
+
+  return out;
 }
 
 /**

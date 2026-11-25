@@ -14,28 +14,50 @@ import { parseEpubArrayBuffer } from './epubParser';
 
 pdfjsLib.GlobalWorkerOptions.workerSrc = pdfWorkerUrl;
 
+export interface DocumentImportProgress {
+  label: string;
+  completed?: number;
+  total?: number;
+}
+
+function throwIfAborted(signal?: AbortSignal): void {
+  if (signal?.aborted) {
+    throw new DOMException('Import annulé', 'AbortError');
+  }
+}
+
 function stripFileExtension(name: string): string {
   return name.replace(/\.[^.]+$/, '').replace(/[_-]+/g, ' ').trim();
 }
 
 async function parsePdfFile(
   file: File,
-  onProgress?: (label: string) => void
+  onProgress?: (progress: DocumentImportProgress) => void,
+  signal?: AbortSignal
 ): Promise<BookSession> {
+  throwIfAborted(signal);
   const arrayBuffer = await file.arrayBuffer();
+  throwIfAborted(signal);
   const loadingTask = pdfjsLib.getDocument({ data: new Uint8Array(arrayBuffer) });
 
   try {
     const pdf = await loadingTask.promise;
+    throwIfAborted(signal);
     const pageTexts: string[] = [];
     const totalPages = pdf.numPages;
     let extractedCharacters = 0;
 
     for (let pageNum = 1; pageNum <= totalPages; pageNum++) {
+      throwIfAborted(signal);
       if (onProgress && (pageNum === 1 || pageNum % 5 === 0 || pageNum === totalPages)) {
-        onProgress(`Extraction PDF : page ${pageNum} / ${totalPages}…`);
+        onProgress({
+          label: `Extraction PDF : page ${pageNum} / ${totalPages}…`,
+          completed: pageNum,
+          total: totalPages,
+        });
       }
       const page = await pdf.getPage(pageNum);
+      throwIfAborted(signal);
       const textContent = await page.getTextContent();
 
       let lastY: number | null = null;
@@ -68,6 +90,7 @@ async function parsePdfFile(
       }
     }
 
+    throwIfAborted(signal);
     const fullText = pageTexts.join('\n\n').trim();
     if (!fullText) {
       throw new Error(
@@ -91,12 +114,16 @@ async function parsePdfFile(
 
 async function parseEpubFile(
   file: File,
-  onProgress?: (label: string) => void
+  onProgress?: (progress: DocumentImportProgress) => void,
+  signal?: AbortSignal
 ): Promise<BookSession> {
-  onProgress?.('Lecture de la structure EPUB…');
+  throwIfAborted(signal);
+  onProgress?.({ label: 'Lecture de la structure EPUB…' });
   const arrayBuffer = await file.arrayBuffer();
+  throwIfAborted(signal);
   const baseTitle = stripFileExtension(file.name) || 'Livre EPUB';
   const extracted = await parseEpubArrayBuffer(arrayBuffer, baseTitle);
+  throwIfAborted(signal);
   const chapters = buildChapterItems(extracted.chapters);
 
   return createBookSession({
@@ -107,8 +134,10 @@ async function parseEpubFile(
   });
 }
 
-async function parseTextFile(file: File): Promise<BookSession> {
+async function parseTextFile(file: File, signal?: AbortSignal): Promise<BookSession> {
+  throwIfAborted(signal);
   const text = (await file.text()).trim();
+  throwIfAborted(signal);
   if (!text) {
     throw new Error('Le fichier texte importé est vide.');
   }
@@ -130,8 +159,10 @@ async function parseTextFile(file: File): Promise<BookSession> {
  */
 export async function importDocumentFile(
   file: File,
-  onProgress?: (label: string) => void
+  onProgress?: (progress: DocumentImportProgress) => void,
+  signal?: AbortSignal
 ): Promise<BookSession> {
+  throwIfAborted(signal);
   const lower = file.name.toLowerCase();
   const isPdf = lower.endsWith('.pdf') || file.type === 'application/pdf';
   const isEpub = lower.endsWith('.epub') || file.type === 'application/epub+zip';
@@ -148,13 +179,13 @@ export async function importDocumentFile(
   if (fileSizeError) throw new Error(fileSizeError);
 
   if (isPdf) {
-    return parsePdfFile(file, onProgress);
+    return parsePdfFile(file, onProgress, signal);
   }
   if (isEpub) {
-    return parseEpubFile(file, onProgress);
+    return parseEpubFile(file, onProgress, signal);
   }
   if (isText) {
-    return parseTextFile(file);
+    return parseTextFile(file, signal);
   }
 
   throw new Error('Impossible de déterminer le format du document.');

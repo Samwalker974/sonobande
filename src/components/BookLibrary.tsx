@@ -7,7 +7,7 @@ import {
   Trash2,
 } from 'lucide-react';
 import type { SavedBookRecord } from '../types/walkman';
-import { formatLongDuration } from '../utils/bookSplitter';
+import { formatLongDuration, formatTimecode } from '../utils/bookSplitter';
 import { formatStorageSizeFr } from '../utils/bookStorage';
 
 interface BookLibraryProps {
@@ -140,6 +140,9 @@ export function BookLibrary({
                       <span className="font-semibold text-[#1c1e21]">
                         Arrêté · Chap. {String(pos.chapterIndex + 1).padStart(2, '0')} · Seg.{' '}
                         {pos.segmentIndex + 1}/{Math.max(1, pos.totalSegments)}
+                        {pos.offsetSeconds && pos.offsetSeconds > 0
+                          ? ` · ${formatTimecode(pos.offsetSeconds)}`
+                          : ''}
                       </span>
                       {pos.excerpt && (
                         <span className="text-[#5b5e64]"> — « {pos.excerpt} »</span>

@@ -1,4 +1,4 @@
-import { ChevronDown, HardDrive, HelpCircle, Menu, Trash2, X } from 'lucide-react';
+import { ChevronDown, HardDrive, HelpCircle, Maximize2, Menu, Trash2, X } from 'lucide-react';
 import { useEffect, useRef, useState } from 'react';
 import type { BrowserStorageMetrics } from '../types/walkman';
 import { formatStorageSizeFr } from '../utils/bookStorage';
@@ -6,12 +6,16 @@ import { formatStorageSizeFr } from '../utils/bookStorage';
 interface TopBarProps {
   storageMetrics: BrowserStorageMetrics;
   hasAnyData: boolean;
+  hasBook: boolean;
+  onEnterFullscreen: () => void;
   onClearAllStorage: () => Promise<void> | void;
 }
 
 export function TopBar({
   storageMetrics,
   hasAnyData,
+  hasBook,
+  onEnterFullscreen,
   onClearAllStorage,
 }: TopBarProps) {
   const [popoverOpen, setPopoverOpen] = useState(false);
@@ -95,10 +99,10 @@ export function TopBar({
           </a>
         </div>
 
-        {/* Zone 2: Concise single-line navigation links */}
+        {/* Zone 2: Concise single-line navigation links matching page order */}
         <nav
           aria-label="Navigation principale"
-          className="hidden md:flex items-center gap-7 text-sm font-medium text-[#4a4d52]"
+          className="hidden md:flex items-center gap-6 text-sm font-medium text-[#4a4d52]"
         >
           <a
             href="#lecteur"
@@ -107,10 +111,10 @@ export function TopBar({
             Lecteur
           </a>
           <a
-            href="#bibliotheque"
+            href="#document"
             className="whitespace-nowrap shrink-0 transition-colors hover:text-[#1c1e21] hover:underline underline-offset-4 focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-[#d9531e]"
           >
-            Bibliothèque
+            Importer
           </a>
           <a
             href="#liseuse"
@@ -124,10 +128,34 @@ export function TopBar({
           >
             Chapitres
           </a>
+          <a
+            href="#bibliotheque"
+            className="whitespace-nowrap shrink-0 transition-colors hover:text-[#1c1e21] hover:underline underline-offset-4 focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-[#d9531e]"
+          >
+            Bibliothèque
+          </a>
         </nav>
 
-        {/* Zone 3: Browser Storage Remaining Space Metric + How-to-clear popover */}
-        <div ref={containerRef} className="relative shrink-0">
+        {/* Zone 3: Fullscreen listening toggle + Browser Storage Remaining Space Metric */}
+        <div className="flex shrink-0 items-center gap-2">
+          <button
+            type="button"
+            onClick={onEnterFullscreen}
+            disabled={!hasBook}
+            data-testid="topbar-fullscreen-btn"
+            aria-label="Passer en mode écoute plein écran"
+            title={
+              hasBook
+                ? 'Mode écoute plein écran (suspend les autres modules)'
+                : 'Chargez un livre ou un texte pour activer le mode écoute plein écran'
+            }
+            className="inline-flex items-center gap-1.5 rounded-lg border border-[#c5bfb3] bg-[#f7f5f0] px-2.5 py-1.5 text-xs font-semibold text-[#1c1e21] whitespace-nowrap transition-colors hover:border-[#9e988c] hover:bg-white focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#d9531e] disabled:cursor-not-allowed disabled:opacity-45"
+          >
+            <Maximize2 className="h-3.5 w-3.5 shrink-0 text-[#d9531e]" aria-hidden="true" />
+            <span className="hidden sm:inline">Plein écran</span>
+          </button>
+
+          <div ref={containerRef} className="relative shrink-0">
           <button
             type="button"
             onClick={() => setPopoverOpen((prev) => !prev)}
@@ -283,6 +311,7 @@ export function TopBar({
             </div>
           )}
         </div>
+        </div>
       </div>
     </header>
     {mobileMenuOpen && (
@@ -310,11 +339,11 @@ export function TopBar({
           </div>
           <nav aria-label="Navigation mobile" className="flex flex-col gap-1">
             {[
-              ['#lecteur', 'Lecteur Walkman'],
-              ['#document', 'Importer un texte'],
-              ['#bibliotheque', 'Bibliothèque'],
-              ['#liseuse', 'Liseuse'],
-              ['#chapitres', 'Chapitres & marque-pages'],
+              ['#lecteur', '1. Lecteur Walkman'],
+              ['#document', '2. Importer un livre ou texte'],
+              ['#liseuse', '3. Liseuse synchronisée'],
+              ['#chapitres', '4. Chapitres & marque-pages'],
+              ['#bibliotheque', '5. Ma Bibliothèque'],
             ].map(([href, label]) => (
               <a
                 key={href}

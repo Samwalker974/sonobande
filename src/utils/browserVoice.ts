@@ -15,9 +15,35 @@ interface PendingSynthesis {
   abortHandler?: () => void;
 }
 
+// @diffusionstudio/vits-web creates a new ONNX InferenceSession on every predict()
+// call without releasing it. Recycling the worker periodically frees WASM heap cleanly
+// during long MP3 exports.
+const MAX_SYNTHESES_PER_WORKER = 16;
+
 let voiceWorker: Worker | null = null;
+let workerSynthesesCount = 0;
 let nextRequestId = 0;
 const pendingSyntheses = new Map<number, PendingSynthesis>();
+
+function recycleVoiceWorkerIfIdle(force = false): void {
+  if (
+    voiceWorker &&
+    pendingSyntheses.size === 0 &&
+    (force || workerSynthesesCount >= MAX_SYNTHESES_PER_WORKER)
+  ) {
+    voiceWorker.terminate();
+    voiceWorker = null;
+    workerSynthesesCount = 0;
+  }
+}
+
+export function disposeVoiceWorker(): void {
+  if (voiceWorker) {
+    voiceWorker.terminate();
+    voiceWorker = null;
+  }
+  workerSynthesesCount = 0;
+}
 
 function finishSynthesis(
   requestId: number,
@@ -38,30 +64,37 @@ function failWorker(worker: Worker, message: string): void {
 
   worker.terminate();
   voiceWorker = null;
+  workerSynthesesCount = 0;
   for (const [requestId] of pendingSyntheses) {
     finishSynthesis(requestId, ({ reject }) => reject(new Error(message)));
   }
 }
 
 function getVoiceWorker(): Worker {
+  recycleVoiceWorkerIfIdle();
   if (voiceWorker) return voiceWorker;
 
   const worker = new Worker(new URL('../workers/voice.worker.ts', import.meta.url), {
     type: 'module',
   });
   voiceWorker = worker;
+  workerSynthesesCount = 0;
 
   worker.onmessage = (event: MessageEvent<VoiceWorkerResponse>) => {
     const response = event.data;
     if (!pendingSyntheses.has(response.id)) return;
 
+    let hadError = false;
     finishSynthesis(response.id, ({ resolve, reject }) => {
       if (response.type === 'result') {
+        workerSynthesesCount++;
         resolve(response.audio);
       } else {
+        hadError = true;
         reject(new Error(response.message));
       }
     });
+    recycleVoiceWorkerIfIdle(hadError);
   };
 
   worker.onerror = (event) => {

@@ -108,6 +108,137 @@
     inset 0 2px 4px rgba(0, 0, 0, 0.22);
 }
 
+/* Protruding Walkman side-edge mechanical plunger keys (right flank) */
+.mech-side-key {
+  background: linear-gradient(
+    90deg,
+    #b7b2a8 0%,
+    #d7d3cb 18%,
+    #e8e5de 62%,
+    #cfcabe 100%
+  );
+  border: 1px solid #938e83;
+  border-left: none;
+  border-radius: 0 9px 9px 0;
+  box-shadow:
+    0 4px 0 #767269,
+    4px 7px 12px rgba(20, 22, 26, 0.22),
+    inset 5px 0 7px -3px rgba(0, 0, 0, 0.26),
+    inset 0 1px 0 rgba(255, 255, 255, 0.88),
+    inset -2px 0 0 rgba(255, 255, 255, 0.4);
+  transition: transform 120ms cubic-bezier(0.16, 1, 0.3, 1), box-shadow 120ms cubic-bezier(0.16, 1, 0.3, 1), background 140ms ease;
+}
+
+.mech-side-key:hover:not(:disabled) {
+  background: linear-gradient(
+    90deg,
+    #c1bcb2 0%,
+    #e1ddd5 18%,
+    #f1eee8 62%,
+    #d8d3c9 100%
+  );
+}
+
+.mech-side-key:active:not(:disabled),
+.mech-side-key.mech-side-key-pressed {
+  transform: translateX(-6px);
+  box-shadow:
+    0 2px 0 #767269,
+    1px 3px 6px rgba(20, 22, 26, 0.2),
+    inset 7px 0 9px -2px rgba(0, 0, 0, 0.32),
+    inset 0 1px 0 rgba(255, 255, 255, 0.65);
+}
+
+.mech-side-key-orange {
+  background: linear-gradient(
+    90deg,
+    #b53e11 0%,
+    #d9531e 20%,
+    #ee6832 64%,
+    #c84715 100%
+  );
+  border: 1px solid #92300b;
+  border-left: none;
+  border-radius: 0 10px 10px 0;
+  color: #ffffff;
+  box-shadow:
+    0 4px 0 #822a09,
+    4px 8px 14px rgba(130, 42, 9, 0.3),
+    inset 5px 0 7px -3px rgba(0, 0, 0, 0.32),
+    inset 0 1px 0 rgba(255, 214, 194, 0.55),
+    inset -2px 0 0 rgba(255, 214, 194, 0.28);
+  transition: transform 120ms cubic-bezier(0.16, 1, 0.3, 1), box-shadow 120ms cubic-bezier(0.16, 1, 0.3, 1), background 140ms ease;
+}
+
+.mech-side-key-orange:hover:not(:disabled) {
+  background: linear-gradient(
+    90deg,
+    #c24515 0%,
+    #e25b25 20%,
+    #f5713c 64%,
+    #d14d1a 100%
+  );
+}
+
+.mech-side-key-orange:active:not(:disabled),
+.mech-side-key-orange.mech-side-key-pressed {
+  transform: translateX(-6px);
+  box-shadow:
+    0 2px 0 #822a09,
+    1px 3px 7px rgba(130, 42, 9, 0.26),
+    inset 7px 0 9px -2px rgba(0, 0, 0, 0.36),
+    inset 0 1px 0 rgba(255, 214, 194, 0.4);
+}
+
+/* Vintage dark gunmetal Walkman fullscreen chassis & tactile hardware keys */
+.walkman-retro-chassis {
+  background:
+    radial-gradient(rgba(244, 241, 234, 0.035) 1px, transparent 0),
+    linear-gradient(180deg, #1d1f24 0%, #15171b 55%, #111317 100%);
+  background-size: 18px 18px, 100% 100%;
+}
+
+.walkman-retro-panel {
+  background: linear-gradient(180deg, #272a31 0%, #1e2026 52%, #181a1f 100%);
+  border: 1px solid #3c4049;
+  box-shadow:
+    0 22px 46px -22px rgba(0, 0, 0, 0.72),
+    inset 0 1px 0 rgba(255, 255, 255, 0.09),
+    inset 0 -2px 4px rgba(0, 0, 0, 0.5);
+}
+
+.mech-key-dark {
+  background: linear-gradient(180deg, #3a3e47 0%, #2b2e36 68%, #22252b 100%);
+  border: 1px solid #525763;
+  color: #f4f1ea;
+  box-shadow:
+    0 4px 0 #101216,
+    0 6px 12px rgba(0, 0, 0, 0.42),
+    inset 0 1px 0 rgba(255, 255, 255, 0.16);
+  transition: transform 110ms cubic-bezier(0.16, 1, 0.3, 1), box-shadow 110ms cubic-bezier(0.16, 1, 0.3, 1), background 140ms ease;
+}
+
+.mech-key-dark:hover:not(:disabled) {
+  background: linear-gradient(180deg, #454a54 0%, #343841 72%, #292c34 100%);
+}
+
+.mech-key-dark:active:not(:disabled),
+.mech-key-dark.mech-key-pressed {
+  transform: translateY(3px);
+  box-shadow:
+    0 1px 0 #101216,
+    0 2px 4px rgba(0, 0, 0, 0.35),
+    inset 0 2px 4px rgba(0, 0, 0, 0.38);
+}
+
+.retro-lcd-window {
+  background: linear-gradient(180deg, #101314 0%, #151a1b 100%);
+  border: 1px solid #353942;
+  box-shadow:
+    inset 0 2px 6px rgba(0, 0, 0, 0.7),
+    0 1px 0 rgba(255, 255, 255, 0.06);
+}
+
 /* Tactile recessed hardware fader */
 input[type="range"].walkman-fader {
   -webkit-appearance: none;

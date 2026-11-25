@@ -101,6 +101,31 @@ function resolveRelativePath(baseDir: string, href: string): string {
   return baseParts.join('/');
 }
 
+function inferEpubFallbackTitle(filePath: string, text: string, fallbackIndex: number): string {
+  const lowerPath = filePath.toLowerCase();
+  const sample = text.trim().slice(0, 800);
+
+  if (/(?:cover|couverture)/.test(lowerPath)) return 'Couverture';
+  if (/(?:titlepage|title[-_]?page|titre|halftitle)/.test(lowerPath)) return 'Page de titre';
+  if (
+    /(?:copyright|colophon|imprint|mentions|credits?|legal)/.test(lowerPath) ||
+    /(?:©|\bcopyright\b|\bisbn\b|\btous droits réservés\b|\ball rights reserved\b|\bdépôt légal\b)/i.test(
+      sample
+    )
+  ) {
+    return 'Mentions & édition';
+  }
+  if (/(?:dedicace|dedication|epigraph)/.test(lowerPath)) return 'Dédicace';
+  if (/(?:toc|sommaire|contents)/.test(lowerPath)) return 'Sommaire du livre';
+  if (/(?:preface|foreword|avant[-_]?propos)/.test(lowerPath)) return 'Préface';
+  if (/(?:acknowledg|remerciement)/.test(lowerPath)) return 'Remerciements';
+  if (/(?:about|author|auteur)/.test(lowerPath)) return 'À propos de l’auteur';
+  if (/(?:appendix|annexe|glossary|glossaire|notes)/.test(lowerPath)) return 'Annexes';
+  if (fallbackIndex <= 3 && text.trim().length <= 1200) {
+    return 'Pages préliminaires';
+  }
+  return `Section ${fallbackIndex}`;
+}
 function getAttr(tag: string, attrName: string): string | null {
   const regex = new RegExp(`\\b${attrName}\\s*=\\s*(?:"([^"]*)"|'([^']*)')`, 'i');
   const match = tag.match(regex);
@@ -205,7 +230,7 @@ export async function parseEpubArrayBuffer(
     const sizeError = getDocumentTextSizeError(extractedCharacters);
     if (sizeError) throw new Error(sizeError);
     chapters.push({
-      title: heading || `Chapitre ${chapters.length + 1}`,
+      title: heading || inferEpubFallbackTitle(filePath, text, chapters.length + 1),
       text,
     });
   }

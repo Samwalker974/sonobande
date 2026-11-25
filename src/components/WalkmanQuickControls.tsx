@@ -1,5 +1,6 @@
 import {
   FastForward,
+  Maximize2,
   Pause,
   Play,
   Rewind,
@@ -22,6 +23,7 @@ interface WalkmanQuickControlsProps {
   onFastForward: () => void;
   onPrevChapter: () => void;
   onNextChapter: () => void;
+  onEnterFullscreen: () => void;
 }
 
 export function WalkmanQuickControls({
@@ -38,6 +40,7 @@ export function WalkmanQuickControls({
   onFastForward,
   onPrevChapter,
   onNextChapter,
+  onEnterFullscreen,
 }: WalkmanQuickControlsProps) {
   const buttonClass =
     'flex h-10 w-10 shrink-0 items-center justify-center rounded-lg border border-[#45484e] bg-[#2b2e33] text-[#f7f5f0] shadow-sm transition-colors hover:bg-[#3b3e44] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#f7f5f0] disabled:cursor-not-allowed disabled:opacity-40';
@@ -123,6 +126,16 @@ export function WalkmanQuickControls({
           className={buttonClass}
         >
           <SkipForward className="h-4 w-4" aria-hidden="true" />
+        </button>
+        <button
+          type="button"
+          onClick={onEnterFullscreen}
+          disabled={!hasBook}
+          aria-label="Mode écoute plein écran"
+          title="Mode écoute plein écran"
+          className={buttonClass}
+        >
+          <Maximize2 className="h-4 w-4 text-[#f07645]" aria-hidden="true" />
         </button>
       </div>
     </aside>
