@@ -1,6 +1,5 @@
 import {
   AlertCircle,
-  BookOpen,
   Eraser,
   FileUp,
   Languages,
@@ -341,32 +340,18 @@ export function TextStudio({
           </div>
         )}
 
-        <div className="grid grid-cols-1 gap-2.5 sm:grid-cols-2">
-          <button
-            type="button"
-            onClick={() => onLoadPastedText(true)}
-            disabled={!draftText.trim() || isImportingFile}
-            className="mech-key-orange flex min-h-[46px] items-center justify-center gap-2 rounded-xl px-4 py-2.5 text-sm font-semibold text-white focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#1c1e21] disabled:cursor-not-allowed disabled:opacity-45"
-          >
-            <Play className="h-4 w-4 fill-current" aria-hidden="true" />
-            <span>Écouter maintenant</span>
-          </button>
-
-          <button
-            type="button"
-            onClick={() => onLoadPastedText(false)}
-            disabled={!draftText.trim() || isImportingFile}
-            className="flex min-h-[46px] items-center justify-center gap-2 rounded-xl border border-[#c5bfb3] bg-white px-4 py-2.5 text-sm font-semibold text-[#1c1e21] transition-colors hover:bg-[#efece4] focus-visible:outline-2 focus-visible:outline-[#d9531e] disabled:cursor-not-allowed disabled:opacity-45"
-          >
-            <BookOpen className="h-4 w-4" aria-hidden="true" />
-            <span>
-              {session ? 'Mettre à jour les chapitres' : 'Découper en chapitres'}
-            </span>
-          </button>
-        </div>
+        <button
+          type="button"
+          onClick={() => onLoadPastedText(true)}
+          disabled={!draftText.trim() || isImportingFile}
+          className="mech-key-orange flex min-h-[46px] w-full items-center justify-center gap-2 rounded-xl px-4 py-2.5 text-sm font-semibold text-white focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#1c1e21] disabled:cursor-not-allowed disabled:opacity-45"
+        >
+          <Play className="h-4 w-4 fill-current" aria-hidden="true" />
+          <span>Écouter ce texte</span>
+        </button>
         {!draftText.trim() && (
           <p className="text-center text-xs text-[#64676d]">
-            Choisissez un fichier ou collez un texte pour commencer.
+            Choisissez un fichier ci-dessus ou collez un texte ici pour l’écouter.
           </p>
         )}
       </div>

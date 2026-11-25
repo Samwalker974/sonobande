@@ -8,6 +8,7 @@ import type {
 } from '../types/walkman';
 import {
   encodeWavBuffer,
+  enhanceVoiceHdFluid,
   insertSilenceAtOffsets,
   parseWavBuffer,
   processAudioSpeedPitch,
@@ -55,11 +56,17 @@ interface UseWalkmanAudioOptions {
   speed: number;
   pitchSemitones: number;
   pauseDurationSeconds: number;
+  hdVoiceEnhanced: boolean;
   volume: number;
   muted: boolean;
   suspendVisualMeter?: boolean;
   onChapterIndexChange: (index: number) => void;
   onBeforePlayChapter?: (chapterIndex: number) => Promise<ChapterItem | null>;
+  onVoiceHealthChange?: (
+    voiceId: NeuralVoiceId,
+    state: 'working' | 'failed',
+    errorMessage?: string | null
+  ) => void;
   onError: (message: string) => void;
 }
 
@@ -103,11 +110,13 @@ export function useWalkmanAudio({
   speed,
   pitchSemitones,
   pauseDurationSeconds,
+  hdVoiceEnhanced,
   volume,
   muted,
   suspendVisualMeter = false,
   onChapterIndexChange,
   onBeforePlayChapter,
+  onVoiceHealthChange,
   onError,
 }: UseWalkmanAudioOptions): WalkmanAudioController {
   const [transportState, setTransportState] = useState<TransportState>('stopped');
@@ -152,11 +161,13 @@ export function useWalkmanAudio({
     speed,
     pitchSemitones,
     pauseDurationSeconds,
+    hdVoiceEnhanced,
     volume,
     muted,
     suspendVisualMeter,
     onChapterIndexChange,
     onBeforePlayChapter,
+    onVoiceHealthChange,
     onError,
   });
   latestRef.current = {
@@ -167,11 +178,13 @@ export function useWalkmanAudio({
     speed,
     pitchSemitones,
     pauseDurationSeconds,
+    hdVoiceEnhanced,
     volume,
     muted,
     suspendVisualMeter,
     onChapterIndexChange,
     onBeforePlayChapter,
+    onVoiceHealthChange,
     onError,
   };
 
@@ -182,6 +195,7 @@ export function useWalkmanAudio({
         (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext;
       const ctx = new AudioCtx();
       const gain = ctx.createGain();
+      gain.gain.value = latestRef.current.muted ? 0 : latestRef.current.volume;
       const analyser = ctx.createAnalyser();
       analyser.fftSize = 256;
       analyser.smoothingTimeConstant = 0.72;
@@ -362,9 +376,21 @@ export function useWalkmanAudio({
         for (let phraseIdx = 0; phraseIdx < speakablePhrases.length; phraseIdx++) {
           const phrase = speakablePhrases[phraseIdx];
           if (signal?.aborted) throw new DOMException('Synthèse annulée', 'AbortError');
-          const wavBlob = await synthesizeInBrowser(phrase.text, nVoice, signal);
-          const wav = parseWavBuffer(await wavBlob.arrayBuffer());
-          phraseAudio.push({ samples: wav.samples, sampleRate: wav.sampleRate });
+          try {
+            const wavBlob = await synthesizeInBrowser(phrase.text, nVoice, signal);
+            const wav = parseWavBuffer(await wavBlob.arrayBuffer());
+            phraseAudio.push({ samples: wav.samples, sampleRate: wav.sampleRate });
+            latestRef.current.onVoiceHealthChange?.(nVoice, 'working', null);
+          } catch (err) {
+            if (!(err instanceof Error && err.name === 'AbortError')) {
+              const msg =
+                err instanceof Error
+                  ? err.message
+                  : 'Impossible de générer la voix dans le navigateur.';
+              latestRef.current.onVoiceHealthChange?.(nVoice, 'failed', msg);
+            }
+            throw err;
+          }
           onProgress?.(phraseIdx + 1, totalPhrases);
         }
 
@@ -436,12 +462,14 @@ export function useWalkmanAudio({
         speed: spd,
         pitchSemitones: pitch,
         pauseDurationSeconds: pause,
+        hdVoiceEnhanced: hdEnabled,
         volume: vol,
         muted: isMuted,
       } = latestRef.current;
       const processed = processAudioSpeedPitch(pcm.samples, pcm.sampleRate, spd, pitch);
+      const enhanced = hdEnabled ? enhanceVoiceHdFluid(processed, pcm.sampleRate) : processed;
       const shaped = insertSilenceAtOffsets(
-        processed,
+        enhanced,
         pcm.samples.length,
         pcm.pauseOffsets,
         pcm.sampleRate,
@@ -778,7 +806,7 @@ export function useWalkmanAudio({
       runId
     );
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [speed, pitchSemitones, pauseDurationSeconds]);
+  }, [speed, pitchSemitones, pauseDurationSeconds, hdVoiceEnhanced]);
 
   // Stop cleanly if session changes
   const prevSessionIdRef = useRef<string | null>(null);

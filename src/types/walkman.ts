@@ -1,4 +1,26 @@
-export type NeuralVoiceId = 'fr_FR-siwis-medium';
+export type NeuralVoiceId =
+  | 'fr_FR-siwis-medium'
+  | 'fr_FR-upmc-medium'
+  | 'fr_FR-tom-medium'
+  | 'fr_FR-mls-medium';
+
+export type VoiceInstallState =
+  | 'checking'
+  | 'missing'
+  | 'downloading'
+  | 'installed'
+  | 'error'
+  | 'unsupported';
+
+export type VoiceHealthState = 'untested' | 'testing' | 'working' | 'failed';
+
+export interface VoiceRuntimeStatus {
+  installState: VoiceInstallState;
+  healthState: VoiceHealthState;
+  downloadPercent: number;
+  sizeBytes: number | null;
+  errorMessage: string | null;
+}
 
 export type DocumentSourceType = 'paste' | 'pdf' | 'epub' | 'txt';
 
@@ -15,7 +37,9 @@ export type ChapterTranslationStatus =
 export interface NeuralVoiceProfile {
   id: NeuralVoiceId;
   name: string;
-  gender?: 'Féminine' | 'Masculine';
+  gender: 'Féminine' | 'Masculine';
+  quality: 'Medium' | 'Légère';
+  approxSizeMb: number;
   timbre: string;
   description: string;
 }

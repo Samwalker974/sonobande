@@ -1,4 +1,5 @@
 import {
+  enhanceVoiceHdFluid,
   insertSilenceAtOffsets,
   parseWavBuffer,
   processAudioSpeedPitch,
@@ -40,12 +41,14 @@ function appendShapedSamples(
   speed: number,
   pitchSemitones: number,
   pauseDurationSeconds: number,
-  includeEndPause: boolean
+  includeEndPause: boolean,
+  hdVoiceEnhanced = false
 ): void {
   const builder = getOrCreateBuilder(session, sampleRate);
   const shaped = processAudioSpeedPitch(samples, sampleRate, speed, pitchSemitones);
+  const enhanced = hdVoiceEnhanced ? enhanceVoiceHdFluid(shaped, sampleRate) : shaped;
   const shapedWithPauses = insertSilenceAtOffsets(
-    shaped,
+    enhanced,
     samples.length,
     pauseOffsets,
     sampleRate,
@@ -90,7 +93,8 @@ function handleRequest(request: Mp3WorkerRequest): void {
       request.speed,
       request.pitchSemitones,
       request.pauseDurationSeconds,
-      request.includeEndPause
+      request.includeEndPause,
+      Boolean(request.hdVoiceEnhanced)
     );
     sendMessage({ type: 'ack', requestId: request.requestId });
     return;
@@ -106,7 +110,8 @@ function handleRequest(request: Mp3WorkerRequest): void {
       request.speed,
       request.pitchSemitones,
       request.pauseDurationSeconds,
-      request.includeEndPause
+      request.includeEndPause,
+      Boolean(request.hdVoiceEnhanced)
     );
     sendMessage({ type: 'ack', requestId: request.requestId });
     return;

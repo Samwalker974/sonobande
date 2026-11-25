@@ -1,5 +1,4 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import * as vits from '@diffusionstudio/vits-web';
 import { BookLibrary } from './components/BookLibrary';
 import { ChapterList } from './components/ChapterList';
 import { ChapterReader } from './components/ChapterReader';
@@ -9,7 +8,10 @@ import { TextStudio } from './components/TextStudio';
 import { TopBar } from './components/TopBar';
 import { WalkmanDeck } from './components/WalkmanDeck';
 import { WalkmanQuickControls } from './components/WalkmanQuickControls';
-import { getNeuralVoiceById } from './constants/voices';
+import {
+  getNeuralVoiceById,
+  NEURAL_FRENCH_VOICES,
+} from './constants/voices';
 import { useWalkmanAudio } from './hooks/useWalkmanAudio';
 import type {
   BookmarkItem,
@@ -23,8 +25,13 @@ import type {
   SampleScript,
   SavedBookRecord,
   TranslationProgress,
+  VoiceRuntimeStatus,
 } from './types/walkman';
-import { DEFAULT_PAUSE_DURATION_SECONDS } from './utils/audioDsp';
+import {
+  DEFAULT_PAUSE_DURATION_SECONDS,
+  enhanceVoiceHdFluid,
+  parseWavBuffer,
+} from './utils/audioDsp';
 import {
   applyChapterTranslation,
   buildChaptersFromRawText,
@@ -45,6 +52,7 @@ import {
   setLastActiveBookId,
 } from './utils/bookStorage';
 import { createBrowserMp3Session, type BrowserMp3Session } from './utils/browserMp3';
+import { synthesizeInBrowser } from './utils/browserVoice';
 import {
   importDocumentFile,
   type DocumentImportProgress,
@@ -65,6 +73,17 @@ import {
 } from './utils/mp3Encoder';
 import { translateInBrowser } from './utils/browserTranslation';
 import { purgeLegacyLocalData } from './utils/privacyCleanup';
+import {
+  clearVoiceHealthEntry,
+  downloadVoiceModel,
+  inspectAllCachedVoices,
+  readVoiceHealthMap,
+  readVoiceListeningSettings,
+  removeVoiceModel,
+  supportsVoiceModelStorage,
+  writeVoiceHealthEntry,
+  writeVoiceListeningSettings,
+} from './utils/voiceStorage';
 
 const EXPORT_STEPS = [
   { id: 1, label: 'Traduction' },
@@ -81,15 +100,26 @@ const INITIAL_STORAGE_METRICS: BrowserStorageMetrics = {
   percentUsed: null,
 };
 
-function buildDraftPreview(bookSession: BookSession): string {
-  return bookSession.totalChars > 60000
-    ? bookSession.chapters[0]?.sourceText ?? ''
-    : bookSession.chapters.map((c) => `${c.sourceTitle}\n\n${c.sourceText}`).join('\n\n');
-}
-
-const MIN_VALID_ONNX_BYTES = 1_000_000;
-const MIN_VALID_JSON_BYTES = 100;
 const FULLSCREEN_STORAGE_KEY = 'sonobande:fullscreen-listening';
+
+function createInitialVoiceStatuses(): Record<NeuralVoiceId, VoiceRuntimeStatus> {
+  const savedHealth = readVoiceHealthMap();
+  return Object.fromEntries(
+    NEURAL_FRENCH_VOICES.map((voice) => {
+      const persisted = savedHealth[voice.id];
+      return [
+        voice.id,
+        {
+          installState: 'checking',
+          healthState: persisted?.state ?? 'untested',
+          downloadPercent: 0,
+          sizeBytes: null,
+          errorMessage: persisted?.state === 'failed' ? persisted.errorMessage : null,
+        } satisfies VoiceRuntimeStatus,
+      ];
+    })
+  ) as Record<NeuralVoiceId, VoiceRuntimeStatus>;
+}
 
 function readSavedFullscreenPreference(): boolean {
   try {
@@ -111,43 +141,6 @@ function writeSavedFullscreenPreference(enabled: boolean): void {
   }
 }
 
-async function isVoiceModelCached(voiceId: NeuralVoiceId): Promise<boolean> {
-  if (!navigator.storage?.getDirectory) return false;
-
-  try {
-    const originDirectory = await navigator.storage.getDirectory();
-    const piperDirectory = await originDirectory.getDirectoryHandle('piper');
-    const onnxHandle = await piperDirectory.getFileHandle(`${voiceId}.onnx`);
-    const jsonHandle = await piperDirectory.getFileHandle(`${voiceId}.onnx.json`);
-    const [onnxFile, jsonFile] = await Promise.all([
-      onnxHandle.getFile(),
-      jsonHandle.getFile(),
-    ]);
-    if (onnxFile.size < MIN_VALID_ONNX_BYTES || jsonFile.size < MIN_VALID_JSON_BYTES) {
-      return false;
-    }
-    JSON.parse(await jsonFile.text());
-    return true;
-  } catch {
-    return false;
-  }
-}
-
-async function waitForVoiceModelCache(
-  voiceId: NeuralVoiceId,
-  attempts = 60
-): Promise<boolean> {
-  for (let attempt = 0; attempt < attempts; attempt++) {
-    if (await isVoiceModelCached(voiceId)) return true;
-    await new Promise((resolve) => window.setTimeout(resolve, 350));
-  }
-  return false;
-}
-
-function supportsVoiceModelStorage(): boolean {
-  return window.isSecureContext && Boolean(navigator.storage?.getDirectory);
-}
-
 export default function App() {
   // Active book state (text + bookmarks + stop position are persisted in IndexedDB; MP3/audio stay strictly in RAM)
   const [session, setSession] = useState<BookSession | null>(null);
@@ -163,27 +156,38 @@ export default function App() {
   const [draftTitle, setDraftTitle] = useState('');
   const [draftText, setDraftText] = useState('');
 
-  const neuralVoiceId: NeuralVoiceId = 'fr_FR-siwis-medium';
-  const [voiceModelStatus, setVoiceModelStatus] = useState<
-    'checking' | 'missing' | 'downloading' | 'ready' | 'error' | 'unsupported'
-  >('checking');
+  // Restored voice & listening preferences (hydrated synchronously so reloads never lose tuning)
+  const initialVoiceSettings = useMemo(() => readVoiceListeningSettings(), []);
+
+  // Multi-voice Piper French selection, OPFS cache state & live health status
+  const [neuralVoiceId, setNeuralVoiceId] = useState<NeuralVoiceId>(
+    () => initialVoiceSettings.voiceId
+  );
+  const [voiceStatuses, setVoiceStatuses] = useState<Record<NeuralVoiceId, VoiceRuntimeStatus>>(
+    () => createInitialVoiceStatuses()
+  );
   const [showVoiceDownload, setShowVoiceDownload] = useState(false);
-  const [voiceDownloadPercent, setVoiceDownloadPercent] = useState(0);
-  const [voiceDownloadMessage, setVoiceDownloadMessage] = useState('');
 
   // English -> French translation settings & progress
-  const [autoTranslateToFrench, setAutoTranslateToFrench] = useState<boolean>(true);
+  const [autoTranslateToFrench, setAutoTranslateToFrench] = useState<boolean>(
+    () => initialVoiceSettings.autoTranslateToFrench
+  );
   const [translationProgress, setTranslationProgress] = useState<TranslationProgress | null>(null);
   const [browserTranslationStatus, setBrowserTranslationStatus] = useState<string | null>(null);
 
-  // Listening personalization
-  const [speed, setSpeed] = useState<number>(1.0);
-  const [pitchSemitones, setPitchSemitones] = useState<number>(0);
-  const [pauseDurationSeconds, setPauseDurationSeconds] = useState(
-    DEFAULT_PAUSE_DURATION_SECONDS
+  // Listening personalization (all persisted automatically in browser storage)
+  const [speed, setSpeed] = useState<number>(() => initialVoiceSettings.speed);
+  const [pitchSemitones, setPitchSemitones] = useState<number>(
+    () => initialVoiceSettings.pitchSemitones
   );
-  const [volume, setVolume] = useState<number>(0.88);
-  const [muted, setMuted] = useState<boolean>(false);
+  const [pauseDurationSeconds, setPauseDurationSeconds] = useState<number>(
+    () => initialVoiceSettings.pauseDurationSeconds
+  );
+  const [hdVoiceEnhanced, setHdVoiceEnhanced] = useState<boolean>(
+    () => initialVoiceSettings.hdVoiceEnhanced
+  );
+  const [volume, setVolume] = useState<number>(() => initialVoiceSettings.volume);
+  const [muted, setMuted] = useState<boolean>(() => initialVoiceSettings.muted);
 
   // Import, errors, fullscreen listening & MP3 export progress
   const [isFullscreenListening, setIsFullscreenListening] = useState<boolean>(() =>
@@ -270,8 +274,6 @@ export default function App() {
         setSession(target.session);
         setBookmarks(target.bookmarks);
         setActiveChapterIndex(restoredChapterIdx);
-        setDraftTitle(target.session.title);
-        setDraftText(buildDraftPreview(target.session));
       } else {
         setIsFullscreenListening(false);
       }
@@ -285,6 +287,10 @@ export default function App() {
         URL.revokeObjectURL(readyMp3UrlRef.current);
         readyMp3UrlRef.current = null;
       }
+      if (previewAudioCtxRef.current && previewAudioCtxRef.current.state !== 'closed') {
+        void previewAudioCtxRef.current.close().catch(() => {});
+        previewAudioCtxRef.current = null;
+      }
     };
   }, []);
 
@@ -292,33 +298,104 @@ export default function App() {
     writeSavedFullscreenPreference(isFullscreenListening);
   }, [isFullscreenListening]);
 
+  // Persist every voice & listening setting immediately and on page unload so every reload restores exact state
+  useEffect(() => {
+    const currentSettings = {
+      voiceId: neuralVoiceId,
+      speed,
+      pitchSemitones,
+      pauseDurationSeconds,
+      hdVoiceEnhanced,
+      volume,
+      muted,
+      autoTranslateToFrench,
+    };
+    writeVoiceListeningSettings(currentSettings);
+
+    const flushSettings = () => {
+      writeVoiceListeningSettings(currentSettings);
+    };
+    window.addEventListener('pagehide', flushSettings);
+    window.addEventListener('beforeunload', flushSettings);
+    return () => {
+      window.removeEventListener('pagehide', flushSettings);
+      window.removeEventListener('beforeunload', flushSettings);
+    };
+  }, [
+    neuralVoiceId,
+    speed,
+    pitchSemitones,
+    pauseDurationSeconds,
+    hdVoiceEnhanced,
+    volume,
+    muted,
+    autoTranslateToFrench,
+  ]);
+
   useEffect(() => {
     let cancelled = false;
 
     void (async () => {
       if (!supportsVoiceModelStorage()) {
         if (cancelled) return;
-        setVoiceModelStatus('unsupported');
-        setVoiceDownloadMessage(
-          'Le stockage des modèles vocaux exige une origine sécurisée. Ouvrez cette application sur le même ordinateur via http://localhost:3000/sonobande/ ou utilisez la version HTTPS.'
-        );
+        const unsupportedMsg =
+          'Le stockage des modèles vocaux exige une origine sécurisée (localhost ou HTTPS).';
+        setVoiceStatuses((prev) => {
+          const next = { ...prev };
+          for (const voice of NEURAL_FRENCH_VOICES) {
+            next[voice.id] = {
+              installState: 'unsupported',
+              healthState: 'failed',
+              downloadPercent: 0,
+              sizeBytes: null,
+              errorMessage: unsupportedMsg,
+            };
+          }
+          return next;
+        });
         setShowVoiceDownload(true);
         return;
       }
 
       try {
-        const storedVoice = await isVoiceModelCached(neuralVoiceId);
+        const cachedMap = await inspectAllCachedVoices();
         if (cancelled) return;
 
-        if (storedVoice) {
-          setVoiceModelStatus('ready');
-        } else {
-          setVoiceModelStatus('missing');
+        let anyInstalled = false;
+        let firstInstalledId: NeuralVoiceId | null = null;
+        setVoiceStatuses((prev) => {
+          const next = { ...prev };
+          for (const voice of NEURAL_FRENCH_VOICES) {
+            const info = cachedMap[voice.id];
+            if (info?.installed) {
+              anyInstalled = true;
+              if (!firstInstalledId) firstInstalledId = voice.id;
+            } else {
+              clearVoiceHealthEntry(voice.id);
+            }
+            next[voice.id] = {
+              ...prev[voice.id],
+              installState: info?.installed ? 'installed' : 'missing',
+              healthState: info?.installed ? prev[voice.id].healthState : 'untested',
+              sizeBytes: info?.sizeBytes ?? null,
+              downloadPercent: info?.installed ? 100 : 0,
+              errorMessage:
+                info?.installed && prev[voice.id].healthState === 'failed'
+                  ? prev[voice.id].errorMessage
+                  : null,
+            };
+          }
+          return next;
+        });
+
+        if (!cachedMap[neuralVoiceId]?.installed && firstInstalledId) {
+          setNeuralVoiceId(firstInstalledId);
+        }
+        if (!anyInstalled) {
           setShowVoiceDownload(true);
         }
       } catch {
         if (cancelled) return;
-        setVoiceModelStatus('error');
         setShowVoiceDownload(true);
       }
     })();
@@ -326,7 +403,9 @@ export default function App() {
     return () => {
       cancelled = true;
     };
-  }, [neuralVoiceId]);
+    // Run once on startup to inspect OPFS voice cache
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const translateChapter = useCallback(
     async (chapterIndex: number, signal?: AbortSignal): Promise<ChapterItem | null> => {
@@ -473,6 +552,27 @@ export default function App() {
     [translateChapter]
   );
 
+  const handleVoiceHealthChange = useCallback(
+    (voiceId: NeuralVoiceId, state: 'working' | 'failed', errMsg?: string | null) => {
+      const normalizedErr = state === 'failed' ? errMsg || 'Erreur de synthèse vocale.' : null;
+      writeVoiceHealthEntry(voiceId, state, normalizedErr);
+      setVoiceStatuses((prev) => {
+        const current = prev[voiceId];
+        if (!current) return prev;
+        return {
+          ...prev,
+          [voiceId]: {
+            ...current,
+            installState: state === 'working' ? 'installed' : current.installState,
+            healthState: state,
+            errorMessage: normalizedErr,
+          },
+        };
+      });
+    },
+    []
+  );
+
   const audio = useWalkmanAudio({
     session,
     activeChapterIndex,
@@ -480,6 +580,7 @@ export default function App() {
     speed,
     pitchSemitones,
     pauseDurationSeconds,
+    hdVoiceEnhanced,
     volume,
     muted,
     suspendVisualMeter: isFullscreenListening,
@@ -487,6 +588,7 @@ export default function App() {
       setActiveChapterIndex(nextIdx);
     },
     onBeforePlayChapter: handleBeforePlayChapter,
+    onVoiceHealthChange: handleVoiceHealthChange,
     onError: (msg) => {
       setErrorMessage(msg);
     },
@@ -709,12 +811,6 @@ export default function App() {
         },
         ac.signal
       );
-      setDraftTitle(nextSession.title);
-      const fullPreview =
-        nextSession.totalChars > 60000
-          ? nextSession.chapters[0]?.sourceText ?? ''
-          : nextSession.chapters.map((c) => `${c.sourceTitle}\n\n${c.sourceText}`).join('\n\n');
-      setDraftText(fullPreview);
       mountNewSession(nextSession, false);
     } catch (err) {
       if (!(err instanceof Error && err.name === 'AbortError')) {
@@ -957,8 +1053,6 @@ export default function App() {
     setSession(book.session);
     setBookmarks(book.bookmarks);
     setActiveChapterIndex(book.lastPosition.chapterIndex);
-    setDraftTitle(book.session.title);
-    setDraftText(buildDraftPreview(book.session));
     void setLastActiveBookId(book.id);
 
     document
@@ -1015,8 +1109,6 @@ export default function App() {
         setSession(nextBook.session);
         setBookmarks(nextBook.bookmarks);
         setActiveChapterIndex(nextBook.lastPosition.chapterIndex);
-        setDraftTitle(nextBook.session.title);
-        setDraftText(buildDraftPreview(nextBook.session));
         void setLastActiveBookId(nextBook.id);
       } else {
         setIsFullscreenListening(false);
@@ -1260,6 +1352,7 @@ export default function App() {
               pitchSemitones,
               pauseDurationSeconds,
               includeEndPause: segIdx + 1 < chapter.segments.length,
+              hdVoiceEnhanced,
             };
 
             if (segAudio.mimeType === 'audio/wav') {
@@ -1461,49 +1554,214 @@ export default function App() {
     translationProgress,
   ]);
 
-  const handleDownloadVoiceModel = async () => {
+  const activeVoiceStatus = voiceStatuses[neuralVoiceId];
+
+  const handleDownloadVoice = useCallback(async (voiceId: NeuralVoiceId) => {
     if (!supportsVoiceModelStorage()) {
-      setVoiceModelStatus('unsupported');
-      setVoiceDownloadMessage(
-        'Le stockage des modèles vocaux exige une origine sécurisée. Ouvrez cette application sur le même ordinateur via http://localhost:3000/sonobande/ ou utilisez la version HTTPS.'
-      );
+      setVoiceStatuses((prev) => ({
+        ...prev,
+        [voiceId]: {
+          ...prev[voiceId],
+          installState: 'unsupported',
+          healthState: 'failed',
+          errorMessage:
+            'Le stockage des modèles vocaux exige une origine sécurisée (localhost ou HTTPS).',
+        },
+      }));
       return;
     }
 
-    setVoiceModelStatus('downloading');
-    setVoiceDownloadPercent(0);
-    setVoiceDownloadMessage('Préparation du téléchargement…');
+    setVoiceStatuses((prev) => ({
+      ...prev,
+      [voiceId]: {
+        ...prev[voiceId],
+        installState: 'downloading',
+        downloadPercent: 0,
+        errorMessage: null,
+      },
+    }));
 
     try {
-      await vits.download(neuralVoiceId, (progress) => {
-        const percent =
-          progress.total > 0 ? Math.round((progress.loaded / progress.total) * 100) : 0;
-        setVoiceDownloadPercent(percent);
-        setVoiceDownloadMessage(
-          percent > 0 ? `Téléchargement de la voix : ${percent}%` : 'Téléchargement de la voix…'
-        );
+      const info = await downloadVoiceModel(voiceId, (percent) => {
+        setVoiceStatuses((prev) => ({
+          ...prev,
+          [voiceId]: {
+            ...prev[voiceId],
+            installState: 'downloading',
+            downloadPercent: percent,
+          },
+        }));
       });
 
-      const isCached = await waitForVoiceModelCache(neuralVoiceId);
-      if (isCached) {
-        window.localStorage.setItem(`sonobande:voice:${neuralVoiceId}:installed`, 'true');
-        setVoiceModelStatus('ready');
-        setShowVoiceDownload(false);
-        setVoiceDownloadPercent(100);
-        setErrorMessage(null);
-      } else {
-        setVoiceModelStatus('error');
-        setVoiceDownloadMessage(
-          'Le modèle a été téléchargé mais les fichiers n’ont pas pu être vérifiés dans le stockage du navigateur.'
-        );
-      }
+      clearVoiceHealthEntry(voiceId);
+      setVoiceStatuses((prev) => ({
+        ...prev,
+        [voiceId]: {
+          ...prev[voiceId],
+          installState: 'installed',
+          healthState: 'untested',
+          downloadPercent: 100,
+          sizeBytes: info.sizeBytes,
+          errorMessage: null,
+        },
+      }));
+      setNeuralVoiceId(voiceId);
+      setShowVoiceDownload(false);
+      setErrorMessage(null);
+      const nextMetrics = await measureBrowserStorage(savedBooksRef.current);
+      setStorageMetrics(nextMetrics);
     } catch (error) {
-      setVoiceModelStatus('error');
-      setVoiceDownloadMessage(
-        error instanceof Error ? error.message : 'Impossible de télécharger la voix.'
-      );
+      const msg =
+        error instanceof Error ? error.message : 'Impossible de télécharger la voix.';
+      setVoiceStatuses((prev) => ({
+        ...prev,
+        [voiceId]: {
+          ...prev[voiceId],
+          installState: 'error',
+          healthState: 'failed',
+          downloadPercent: 0,
+          errorMessage: msg,
+        },
+      }));
     }
-  };
+  }, []);
+
+  const handleSelectOrDownloadVoice = useCallback(
+    (voiceId: NeuralVoiceId) => {
+      const current = voiceStatuses[voiceId];
+      if (!current || current.installState === 'downloading' || current.installState === 'unsupported') {
+        return;
+      }
+      if (current.installState === 'installed') {
+        setNeuralVoiceId(voiceId);
+        setErrorMessage(null);
+        return;
+      }
+      void handleDownloadVoice(voiceId);
+    },
+    [handleDownloadVoice, voiceStatuses]
+  );
+
+  const previewAudioCtxRef = useRef<AudioContext | null>(null);
+
+  const handleTestVoice = useCallback(
+    async (voiceId: NeuralVoiceId) => {
+      // Unlock an AudioContext synchronously on click so the preview plays smoothly
+      let previewCtx: AudioContext | null = null;
+      try {
+        const AudioCtx =
+          window.AudioContext ||
+          (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext;
+        if (!previewAudioCtxRef.current || previewAudioCtxRef.current.state === 'closed') {
+          previewAudioCtxRef.current = new AudioCtx();
+        }
+        previewCtx = previewAudioCtxRef.current;
+        if (previewCtx.state === 'suspended') {
+          void previewCtx.resume().catch(() => {});
+        }
+      } catch {
+        previewCtx = null;
+      }
+
+      setVoiceStatuses((prev) => ({
+        ...prev,
+        [voiceId]: {
+          ...prev[voiceId],
+          healthState: 'testing',
+          errorMessage: null,
+        },
+      }));
+
+      try {
+        const voiceName = getNeuralVoiceById(voiceId).name;
+        const wavBlob = await synthesizeInBrowser(
+          `Bonjour, ici la voix ${voiceName}. La synthèse fonctionne parfaitement.`,
+          voiceId
+        );
+        const wav = parseWavBuffer(await wavBlob.arrayBuffer());
+        if (wav.samples.length === 0) {
+          throw new Error('Aucun signal audio généré.');
+        }
+
+        const readySamples = hdVoiceEnhanced
+          ? enhanceVoiceHdFluid(wav.samples, wav.sampleRate)
+          : wav.samples;
+
+        if (previewCtx) {
+          const buffer = previewCtx.createBuffer(1, readySamples.length, wav.sampleRate);
+          buffer.copyToChannel(new Float32Array(readySamples), 0);
+          const src = previewCtx.createBufferSource();
+          const gain = previewCtx.createGain();
+          gain.gain.value = muted ? 0 : volume;
+          src.buffer = buffer;
+          src.connect(gain);
+          gain.connect(previewCtx.destination);
+          src.start();
+        }
+
+        writeVoiceHealthEntry(voiceId, 'working', null);
+        setVoiceStatuses((prev) => ({
+          ...prev,
+          [voiceId]: {
+            ...prev[voiceId],
+            installState: 'installed',
+            healthState: 'working',
+            errorMessage: null,
+          },
+        }));
+      } catch (error) {
+        const msg =
+          error instanceof Error ? error.message : 'Échec du test de synthèse vocale.';
+        writeVoiceHealthEntry(voiceId, 'failed', msg);
+        setVoiceStatuses((prev) => ({
+          ...prev,
+          [voiceId]: {
+            ...prev[voiceId],
+            healthState: 'failed',
+            errorMessage: msg,
+          },
+        }));
+      }
+    },
+    [hdVoiceEnhanced, muted, volume]
+  );
+
+  const handleDeleteVoice = useCallback(
+    async (voiceId: NeuralVoiceId) => {
+      if (voiceId === neuralVoiceId) {
+        audio.clearAudioMemory();
+      }
+
+      await removeVoiceModel(voiceId);
+
+      setVoiceStatuses((prev) => {
+        const next: Record<NeuralVoiceId, VoiceRuntimeStatus> = {
+          ...prev,
+          [voiceId]: {
+            installState: 'missing',
+            healthState: 'untested',
+            downloadPercent: 0,
+            sizeBytes: null,
+            errorMessage: null,
+          },
+        };
+
+        if (voiceId === neuralVoiceId) {
+          const fallback = NEURAL_FRENCH_VOICES.find(
+            (v) => v.id !== voiceId && next[v.id]?.installState === 'installed'
+          );
+          if (fallback) {
+            setNeuralVoiceId(fallback.id);
+          }
+        }
+        return next;
+      });
+
+      const nextMetrics = await measureBrowserStorage(savedBooksRef.current);
+      setStorageMetrics(nextMetrics);
+    },
+    [audio, neuralVoiceId]
+  );
 
   return (
     <div className="min-h-screen bg-[#ece9e2] text-[#1c1e21]">
@@ -1522,42 +1780,45 @@ export default function App() {
               Télécharger {getNeuralVoiceById(neuralVoiceId).name}
             </h2>
             <p className="mt-2 text-sm leading-relaxed text-[#55585e]">
-              {voiceModelStatus === 'unsupported'
+              {activeVoiceStatus.installState === 'unsupported'
                 ? 'Cette adresse HTTP ne permet pas au navigateur d’enregistrer le modèle vocal.'
-                : <>Le modèle Piper <span className="font-mono">fr_FR-siwis-medium</span> sera enregistré dans le stockage privé de votre navigateur. Il pourra ensuite être utilisé hors ligne.</>}
+                : <>Le modèle Piper <span className="font-mono">{neuralVoiceId}</span> sera enregistré dans le stockage privé de votre navigateur. Vous pourrez aussi télécharger ou supprimer d’autres voix françaises à tout moment.</>}
             </p>
 
-            {voiceModelStatus === 'downloading' ? (
+            {activeVoiceStatus.installState === 'downloading' ? (
               <div className="mt-5">
                 <div className="mb-2 flex items-center justify-between text-xs text-[#55585e]">
-                  <span>{voiceDownloadMessage}</span>
-                  <span className="font-mono tabular-nums">{voiceDownloadPercent}%</span>
+                  <span>Téléchargement de la voix…</span>
+                  <span className="font-mono tabular-nums">
+                    {activeVoiceStatus.downloadPercent}%
+                  </span>
                 </div>
                 <div className="h-2 overflow-hidden rounded-full bg-[#ddd8cc]">
                   <div
                     className="h-full rounded-full bg-[#d9531e] transition-[width]"
-                    style={{ width: `${voiceDownloadPercent}%` }}
+                    style={{ width: `${activeVoiceStatus.downloadPercent}%` }}
                   />
                 </div>
               </div>
-            ) : voiceModelStatus !== 'unsupported' ? (
+            ) : activeVoiceStatus.installState !== 'unsupported' ? (
               <button
                 type="button"
-                onClick={() => void handleDownloadVoiceModel()}
+                onClick={() => void handleDownloadVoice(neuralVoiceId)}
                 className="mt-5 w-full rounded-lg bg-[#d9531e] px-4 py-2.5 text-sm font-semibold text-white hover:bg-[#c24515]"
               >
-                Télécharger le modèle vocal
+                Télécharger {getNeuralVoiceById(neuralVoiceId).name}
               </button>
             ) : null}
 
-            {(voiceModelStatus === 'error' || voiceModelStatus === 'unsupported') &&
-              voiceDownloadMessage && (
+            {(activeVoiceStatus.installState === 'error' ||
+              activeVoiceStatus.installState === 'unsupported') &&
+              activeVoiceStatus.errorMessage && (
               <p className="mt-3 rounded-lg border border-[#d49a89] bg-[#fbefeb] px-3 py-2 text-xs text-[#8a280b]">
-                {voiceDownloadMessage}
+                {activeVoiceStatus.errorMessage}
               </p>
             )}
 
-            {voiceModelStatus !== 'downloading' && (
+            {activeVoiceStatus.installState !== 'downloading' && (
               <button
                 type="button"
                 onClick={() => setShowVoiceDownload(false)}
@@ -1583,6 +1844,8 @@ export default function App() {
             session={session}
             activeChapter={activeChapter}
             activeChapterIndex={activeChapterIndex}
+            neuralVoiceId={neuralVoiceId}
+            voiceStatuses={voiceStatuses}
             transportState={audio.transportState}
             activeSegmentIndex={audio.activeSegmentIndex}
             totalSegmentsInChapter={audio.totalSegmentsInChapter}
@@ -1592,6 +1855,7 @@ export default function App() {
             speed={speed}
             pitchSemitones={pitchSemitones}
             pauseDurationSeconds={pauseDurationSeconds}
+            hdVoiceEnhanced={hdVoiceEnhanced}
             volume={volume}
             muted={muted}
             isExporting={Boolean(exportProgress)}
@@ -1606,6 +1870,9 @@ export default function App() {
             onFastForward={audio.fastForward}
             onPrevChapter={() => handleSelectChapter(activeChapterIndex - 1, true)}
             onNextChapter={() => handleSelectChapter(activeChapterIndex + 1, true)}
+            onSelectChapter={(chapterIdx) =>
+              handleSelectChapter(chapterIdx, audio.transportState === 'playing')
+            }
             onPrevSegment={() =>
               audio.jumpToSegment(
                 Math.max(0, audio.activeSegmentIndex - 1),
@@ -1625,6 +1892,8 @@ export default function App() {
             onSpeedChange={(s) => setSpeed(Math.round(s * 100) / 100)}
             onPitchChange={(p) => setPitchSemitones(Math.round(p * 10) / 10)}
             onPauseDurationChange={setPauseDurationSeconds}
+            onToggleHdVoice={() => setHdVoiceEnhanced((prev) => !prev)}
+            onSelectOrDownloadVoice={handleSelectOrDownloadVoice}
             onResetTuning={() => {
               setSpeed(1.0);
               setPitchSemitones(0);
@@ -1686,6 +1955,7 @@ export default function App() {
                   activeChapter={activeChapter}
                   activeChapterIndex={activeChapterIndex}
                   neuralVoiceId={neuralVoiceId}
+                  voiceStatuses={voiceStatuses}
                   transportState={audio.transportState}
                   activeSegmentIndex={audio.activeSegmentIndex}
                   totalSegmentsInChapter={audio.totalSegmentsInChapter}
@@ -1696,6 +1966,7 @@ export default function App() {
                   speed={speed}
                   pitchSemitones={pitchSemitones}
                   pauseDurationSeconds={pauseDurationSeconds}
+                  hdVoiceEnhanced={hdVoiceEnhanced}
                   volume={volume}
                   muted={muted}
                   isExporting={Boolean(exportProgress)}
@@ -1717,6 +1988,10 @@ export default function App() {
                   onSpeedChange={(s) => setSpeed(Math.round(s * 100) / 100)}
                   onPitchChange={(p) => setPitchSemitones(Math.round(p * 10) / 10)}
                   onPauseDurationChange={setPauseDurationSeconds}
+                  onToggleHdVoice={() => setHdVoiceEnhanced((prev) => !prev)}
+                  onSelectOrDownloadVoice={handleSelectOrDownloadVoice}
+                  onTestVoice={(voiceId) => void handleTestVoice(voiceId)}
+                  onDeleteVoice={(voiceId) => void handleDeleteVoice(voiceId)}
                   onResetTuning={() => {
                     setSpeed(1.0);
                     setPitchSemitones(0);

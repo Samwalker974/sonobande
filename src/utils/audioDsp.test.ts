@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
   encodeWavBuffer,
+  enhanceVoiceHdFluid,
   generateDemoTapeWav,
   insertSilenceAtOffsets,
   parseWavBuffer,
@@ -129,4 +130,25 @@ test('demo tape WAV generator outputs valid playable buffers for all variants', 
     assert.equal(decoded.sampleRate, 24000);
     assert.ok(decoded.samples.length > 24000 * 3);
   }
+});
+
+test('enhanceVoiceHdFluid removes DC offset, smooths edges, and stays safely bounded', () => {
+  const sampleRate = 22050;
+  const raw = new Float32Array(sampleRate);
+  for (let i = 0; i < raw.length; i++) {
+    raw[i] = 0.2 + 0.45 * Math.sin((2 * Math.PI * 300 * i) / sampleRate);
+  }
+
+  const enhanced = enhanceVoiceHdFluid(raw, sampleRate);
+  assert.equal(enhanced.length, raw.length);
+  assert.equal(enhanced[0], 0);
+  assert.equal(enhanced[enhanced.length - 1], 0);
+
+  let mean = 0;
+  for (let i = 0; i < enhanced.length; i++) {
+    assert.ok(Number.isFinite(enhanced[i]) && enhanced[i] >= -1 && enhanced[i] <= 1);
+    mean += enhanced[i];
+  }
+  mean /= enhanced.length;
+  assert.ok(Math.abs(mean) < 0.02, `Expected DC offset removed, got mean=${mean}`);
 });

@@ -7,6 +7,8 @@ import {
   ChevronLeft,
   ChevronRight,
   Download,
+  FileText,
+  FolderOpen,
   Languages,
   Loader2,
   Play,
@@ -14,15 +16,19 @@ import {
   Trash2,
   X,
 } from 'lucide-react';
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import type {
   BookSession,
   BookmarkItem,
-  ChapterItem,
   ReadingPosition,
   ReadyMp3Download,
 } from '../types/walkman';
 import { formatLongDuration, formatTimecode } from '../utils/bookSplitter';
+import {
+  buildBookToc,
+  formatTocCompositionSummary,
+  type TocEntry,
+} from '../utils/bookToc';
 import { formatByteSizeFr } from '../utils/mp3Encoder';
 import { MAX_AUTO_SAVED_DOCUMENT_CHARS } from '../utils/documentLimits';
 
@@ -83,17 +89,22 @@ export function ChapterList({
     setChapterPage(Math.floor(activeChapterIndex / CHAPTERS_PER_PAGE));
   }, [session?.id, activeChapterIndex]);
 
-  if (!session) {
+  const toc = useMemo(
+    () => (session ? buildBookToc(session.chapters, session.title) : null),
+    [session]
+  );
+
+  if (!session || !toc) {
     return (
       <section
         id="chapitres"
-        aria-label="Table des chapitres et marque-pages en mémoire"
+        aria-label="Sommaire et marque-pages en mémoire"
         className="rounded-2xl border border-[#d4cfc4] bg-[#f7f5f0] p-6"
       >
         <div className="flex flex-col items-start justify-between gap-2 sm:flex-row sm:items-center">
           <div>
             <h2 className="font-display text-lg font-bold tracking-tight text-[#1c1e21]">
-              Chapitres &amp; Marque-pages du livre actif
+              Sommaire &amp; Marque-pages du livre actif
             </h2>
             <p className="mt-0.5 text-xs text-[#5b5e64]">
               Texte et position d’arrêt sauvegardés dans votre navigateur · Aucun MP3 stocké
@@ -107,7 +118,7 @@ export function ChapterList({
             Aucun document chargé en mémoire
           </p>
           <p className="mt-1 max-w-md text-sm text-[#5b5e64]">
-            Importez un livre français ou anglais (PDF, EPUB, TXT) ou collez votre texte ci-dessus. Les chapitres traduits et vos marque-pages de session apparaîtront ici.
+            Importez un livre français ou anglais (PDF, EPUB, TXT) ou collez votre texte ci-dessus. Le sommaire structuré (parties, chapitres, pages d’infos) et vos marque-pages apparaîtront ici.
           </p>
         </div>
       </section>
@@ -115,16 +126,16 @@ export function ChapterList({
   }
 
   const totalSegments = session.chapters.reduce((sum, c) => sum + c.segments.length, 0);
-  const pageCount = Math.max(1, Math.ceil(session.chapters.length / CHAPTERS_PER_PAGE));
+  const pageCount = Math.max(1, Math.ceil(toc.entries.length / CHAPTERS_PER_PAGE));
   const currentPage = Math.min(chapterPage, pageCount - 1);
   const pageStart = currentPage * CHAPTERS_PER_PAGE;
-  const pageEnd = Math.min(pageStart + CHAPTERS_PER_PAGE, session.chapters.length);
-  const visibleChapters = session.chapters.slice(pageStart, pageEnd);
+  const pageEnd = Math.min(pageStart + CHAPTERS_PER_PAGE, toc.entries.length);
+  const visibleEntries = toc.entries.slice(pageStart, pageEnd);
 
   return (
     <section
       id="chapitres"
-      aria-label="Table des chapitres et marque-pages en mémoire"
+      aria-label="Sommaire et marque-pages en mémoire"
       className="rounded-2xl border border-[#d4cfc4] bg-[#f7f5f0] p-5 sm:p-6"
     >
       {/* Header + Tab Switcher */}
@@ -141,8 +152,7 @@ export function ChapterList({
             </span>
             <span aria-hidden="true">·</span>
             <span className="font-mono tabular-nums">
-              {session.chapters.length}{' '}
-              {session.chapters.length > 1 ? 'chapitres' : 'chapitre'}
+              {formatTocCompositionSummary(toc)}
             </span>
             <span aria-hidden="true">·</span>
             <span className="font-mono tabular-nums">
@@ -158,10 +168,10 @@ export function ChapterList({
         </div>
 
         <div className="flex flex-wrap items-center gap-2.5">
-          {/* Two-tab switcher: Chapitres / Marque-pages */}
+          {/* Two-tab switcher: Sommaire / Marque-pages */}
           <div
             role="tablist"
-            aria-label="Navigation chapitres et marque-pages"
+            aria-label="Navigation sommaire et marque-pages"
             className="inline-flex rounded-lg bg-[#e8e4db] p-1"
           >
             <button
@@ -176,7 +186,7 @@ export function ChapterList({
                   : 'text-[#4e5157] hover:text-[#1c1e21]'
               }`}
             >
-              Chapitres ({session.chapters.length})
+              Sommaire ({toc.entries.length})
             </button>
             <button
               type="button"
@@ -260,13 +270,13 @@ export function ChapterList({
         </p>
       )}
 
-      {/* Tab Panel 1: Ephemeral Chapter List */}
+      {/* Tab Panel 1: Structured Book Sommaire (Infos / Parties / Chapitres / Annexes) */}
       {activeTab === 'chapters' ? (
         <>
           {pageCount > 1 && (
             <div className="mt-4 flex items-center justify-between gap-3 text-xs">
               <span className="font-mono tabular-nums text-[#55585e]">
-                Chapitres {pageStart + 1}–{pageEnd} sur {session.chapters.length}
+                Sections {pageStart + 1}–{pageEnd} sur {toc.entries.length}
               </span>
               <div className="flex items-center gap-2">
                 <button
@@ -292,130 +302,176 @@ export function ChapterList({
           )}
           <ol
             data-testid="chapter-list"
-            className="mt-4 divide-y divide-[#e6e1d7] rounded-xl border border-[#e0dbd0] bg-white"
+            className="mt-4 divide-y divide-[#e6e1d7] overflow-hidden rounded-xl border border-[#e0dbd0] bg-white"
           >
-            {visibleChapters.map((chapter: ChapterItem, pageIndex) => {
-              const idx = pageStart + pageIndex;
+            {visibleEntries.map((entry: TocEntry) => {
+              const { chapter, chapterIndex: idx } = entry;
               const isCurrent = idx === activeChapterIndex;
               const isNeedsTranslation = chapter.translationStatus === 'needs_translation';
               const isTranslating = chapter.translationStatus === 'translating';
               const isTranslated = chapter.translationStatus === 'translated';
+              const isFrontmatter = entry.kind === 'frontmatter';
+              const isPart = entry.kind === 'part';
+              const isBackmatter = entry.kind === 'backmatter';
+              const isNestedChapter = entry.depth === 1;
 
               const displayTitle = isNeedsTranslation
-                ? `Chapitre ${idx + 1} (anglais — à traduire)`
-                : chapter.title;
+                ? `${entry.displayTitle} (anglais — à traduire)`
+                : entry.displayTitle;
 
               return (
                 <li
                   key={chapter.id}
-                  className={`flex flex-col gap-3 px-4 py-3.5 transition-colors sm:flex-row sm:items-center sm:justify-between ${
-                    isCurrent ? 'bg-[#fbf7f2]' : 'hover:bg-[#faf8f4]'
-                  }`}
+                  data-toc-kind={entry.kind}
+                  className={`relative flex flex-col gap-3 px-4 py-3.5 transition-colors sm:flex-row sm:items-center sm:justify-between ${
+                    isPart
+                      ? isCurrent
+                        ? 'border-t-2 border-t-[#d9531e]/50 bg-[#f8efe5]'
+                        : 'border-t-2 border-t-[#dcd4c6] bg-[#f3efe7] hover:bg-[#eee8dd]'
+                      : isFrontmatter
+                        ? isCurrent
+                          ? 'bg-[#fbf7f2]'
+                          : 'bg-[#faf8f4] hover:bg-[#f4f1ea]'
+                        : isCurrent
+                          ? 'bg-[#fbf7f2]'
+                          : 'hover:bg-[#faf8f4]'
+                  } ${isNestedChapter ? 'pl-8 sm:pl-10' : ''}`}
                 >
-                <div className="min-w-0 flex-1">
-                  <div className="flex items-baseline gap-2.5">
-                    <span className="font-mono text-xs font-semibold tabular-nums text-[#7b786e]">
-                      {String(idx + 1).padStart(2, '0')}
-                    </span>
+                  {isNestedChapter && (
+                    <span
+                      aria-hidden="true"
+                      className={`pointer-events-none absolute top-0 bottom-0 left-4 w-[2px] sm:left-5 ${
+                        isCurrent ? 'bg-[#d9531e]' : 'bg-[#e1d9cb]'
+                      }`}
+                    />
+                  )}
+                  <div className="min-w-0 flex-1">
+                    <div className="flex flex-wrap items-center gap-2">
+                      {isPart ? (
+                        <span className="inline-flex shrink-0 items-center gap-1 rounded bg-[#1c1e21] px-2 py-0.5 font-mono text-[10px] font-bold uppercase tracking-wider text-[#f7f5f0]">
+                          <FolderOpen className="h-3 w-3 text-[#f07645]" aria-hidden="true" />
+                          <span>{entry.badgeLabel}</span>
+                        </span>
+                      ) : isFrontmatter ? (
+                        <span className="inline-flex shrink-0 items-center gap-1 rounded border border-[#d6cfc2] bg-[#efebe2] px-1.5 py-0.5 font-mono text-[10px] font-semibold uppercase tracking-wide text-[#6b675d]">
+                          <FileText className="h-2.5 w-2.5" aria-hidden="true" />
+                          <span>Infos</span>
+                        </span>
+                      ) : isBackmatter ? (
+                        <span className="inline-flex shrink-0 items-center rounded border border-[#d6cfc2] bg-[#efebe2] px-1.5 py-0.5 font-mono text-[10px] font-semibold uppercase tracking-wide text-[#6b675d]">
+                          Fin
+                        </span>
+                      ) : (
+                        <span className="font-mono text-xs font-semibold tabular-nums text-[#7b786e]">
+                          {String(entry.chapterNumber ?? idx + 1).padStart(2, '0')}
+                        </span>
+                      )}
+
+                      <button
+                        type="button"
+                        onClick={() => onSelectChapter(idx, false)}
+                        className={`truncate text-left font-display hover:text-[#b93e0e] focus-visible:outline-2 focus-visible:outline-[#d9531e] ${
+                          isPart
+                            ? 'text-sm font-bold text-[#1c1e21] sm:text-base'
+                            : isFrontmatter || isBackmatter
+                              ? 'text-sm font-medium text-[#4a4d54]'
+                              : 'text-sm font-semibold text-[#1c1e21] sm:text-base'
+                        }`}
+                      >
+                        {displayTitle}
+                      </button>
+                    </div>
+                    <p className="mt-1 text-xs text-[#5b5e64]">
+                      <span className="font-mono tabular-nums">
+                        ~{formatLongDuration(chapter.estimatedSeconds)}
+                      </span>
+                      <span className="mx-1.5" aria-hidden="true">·</span>
+                      <span className="font-mono tabular-nums">
+                        {chapter.segments.length}{' '}
+                        {chapter.segments.length > 1 ? 'segments' : 'segment'}
+                      </span>
+                      {isTranslated && (
+                        <>
+                          <span className="mx-1.5" aria-hidden="true">·</span>
+                          <span className="font-medium text-[#2c5e3b]">Traduit en français</span>
+                        </>
+                      )}
+                      {isNeedsTranslation && (
+                        <>
+                          <span className="mx-1.5" aria-hidden="true">·</span>
+                          <span>À traduire en français</span>
+                        </>
+                      )}
+                      {isTranslating && (
+                        <>
+                          <span className="mx-1.5" aria-hidden="true">·</span>
+                          <span className="font-medium text-[#b93e0e]">Traduction en cours…</span>
+                        </>
+                      )}
+                      {isCurrent && (
+                        <>
+                          <span className="mx-1.5" aria-hidden="true">·</span>
+                          <span className="font-medium text-[#b93e0e]">
+                            {isPlaying
+                              ? `En lecture (segment ${activeSegmentIndex + 1}/${chapter.segments.length})`
+                              : 'Chargé dans le Walkman'}
+                          </span>
+                        </>
+                      )}
+                    </p>
+                    <p className="mt-1 line-clamp-1 text-xs text-[#6d7076]">
+                      {isNeedsTranslation
+                        ? 'Cliquez sur « Traduire » ou « Écouter » pour afficher cette section en français.'
+                        : `${chapter.text.slice(0, 180).replace(/\s+/g, ' ').trim()}${chapter.text.length > 180 ? '…' : ''}`}
+                    </p>
+                  </div>
+
+                  <div className="flex shrink-0 flex-wrap items-center gap-2">
+                    {isNeedsTranslation && (
+                      <button
+                        type="button"
+                        onClick={() => onTranslateChapter(idx)}
+                        aria-label={`Traduire « ${entry.displayTitle} » en français`}
+                        className="inline-flex items-center gap-1.5 rounded-lg border border-[#d6c2ae] bg-[#f7efe6] px-3 py-1.5 text-xs font-semibold text-[#8f2e08] whitespace-nowrap transition-colors hover:bg-[#f0e3d4] focus-visible:outline-2 focus-visible:outline-[#d9531e]"
+                      >
+                        <Languages className="h-3.5 w-3.5" aria-hidden="true" />
+                        <span>Traduire</span>
+                      </button>
+                    )}
+
+                    {isTranslating && (
+                      <span className="inline-flex items-center gap-1.5 px-2 py-1 text-xs font-medium text-[#b93e0e]">
+                        <Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden="true" />
+                        <span>Traduction…</span>
+                      </span>
+                    )}
+
                     <button
                       type="button"
-                      onClick={() => onSelectChapter(idx, false)}
-                      className="truncate text-left font-display text-sm font-semibold text-[#1c1e21] hover:text-[#b93e0e] focus-visible:outline-2 focus-visible:outline-[#d9531e] sm:text-base"
+                      onClick={() => onSelectChapter(idx, true)}
+                      disabled={isTranslating}
+                      aria-label={`Écouter « ${displayTitle} »`}
+                      className={`inline-flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-semibold whitespace-nowrap transition-colors focus-visible:outline-2 focus-visible:outline-[#d9531e] disabled:opacity-45 ${
+                        isCurrent
+                          ? 'bg-[#d9531e] text-white hover:bg-[#c24515]'
+                          : 'bg-[#1c1e21] text-[#f7f5f0] hover:bg-[#31343a]'
+                      }`}
                     >
-                      {displayTitle}
+                      <Play className="h-3.5 w-3.5 fill-current" aria-hidden="true" />
+                      <span>{isCurrent && isPlaying ? 'En cours' : 'Écouter'}</span>
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={() => onExportChapterMp3(idx)}
+                      disabled={isExporting || isTranslating}
+                      aria-label={`Télécharger « ${displayTitle} » en MP3`}
+                      className="inline-flex items-center gap-1.5 rounded-lg border border-[#cfc9bd] bg-[#f7f5f0] px-3 py-1.5 text-xs font-medium text-[#25272b] whitespace-nowrap transition-colors hover:bg-[#ece8df] focus-visible:outline-2 focus-visible:outline-[#d9531e] disabled:opacity-45"
+                    >
+                      <Download className="h-3.5 w-3.5 text-[#d9531e]" aria-hidden="true" />
+                      <span>MP3</span>
                     </button>
                   </div>
-                  <p className="mt-0.5 pl-6 text-xs text-[#5b5e64]">
-                    <span className="font-mono tabular-nums">
-                      ~{formatLongDuration(chapter.estimatedSeconds)}
-                    </span>
-                    <span className="mx-1.5" aria-hidden="true">·</span>
-                    <span className="font-mono tabular-nums">
-                      {chapter.segments.length}{' '}
-                      {chapter.segments.length > 1 ? 'segments' : 'segment'}
-                    </span>
-                    {isTranslated && (
-                      <>
-                        <span className="mx-1.5" aria-hidden="true">·</span>
-                        <span className="font-medium text-[#2c5e3b]">Traduit en français</span>
-                      </>
-                    )}
-                    {isNeedsTranslation && (
-                      <>
-                        <span className="mx-1.5" aria-hidden="true">·</span>
-                        <span>À traduire en français</span>
-                      </>
-                    )}
-                    {isTranslating && (
-                      <>
-                        <span className="mx-1.5" aria-hidden="true">·</span>
-                        <span className="font-medium text-[#b93e0e]">Traduction en cours…</span>
-                      </>
-                    )}
-                    {isCurrent && (
-                      <>
-                        <span className="mx-1.5" aria-hidden="true">·</span>
-                        <span className="font-medium text-[#b93e0e]">
-                          {isPlaying
-                            ? `En lecture (segment ${activeSegmentIndex + 1}/${chapter.segments.length})`
-                            : 'Chargé dans le Walkman'}
-                        </span>
-                      </>
-                    )}
-                  </p>
-                  <p className="mt-1 line-clamp-1 pl-6 text-xs text-[#6d7076]">
-                    {isNeedsTranslation
-                      ? 'Cliquez sur « Traduire » ou « Écouter » pour afficher ce chapitre en français.'
-                      : `${chapter.text.slice(0, 180).replace(/\s+/g, ' ').trim()}${chapter.text.length > 180 ? '…' : ''}`}
-                  </p>
-                </div>
-
-                <div className="flex shrink-0 flex-wrap items-center gap-2 pl-6 sm:pl-0">
-                  {isNeedsTranslation && (
-                    <button
-                      type="button"
-                      onClick={() => onTranslateChapter(idx)}
-                      aria-label={`Traduire le chapitre ${idx + 1} en français`}
-                      className="inline-flex items-center gap-1.5 rounded-lg border border-[#d6c2ae] bg-[#f7efe6] px-3 py-1.5 text-xs font-semibold text-[#8f2e08] whitespace-nowrap transition-colors hover:bg-[#f0e3d4] focus-visible:outline-2 focus-visible:outline-[#d9531e]"
-                    >
-                      <Languages className="h-3.5 w-3.5" aria-hidden="true" />
-                      <span>Traduire</span>
-                    </button>
-                  )}
-
-                  {isTranslating && (
-                    <span className="inline-flex items-center gap-1.5 px-2 py-1 text-xs font-medium text-[#b93e0e]">
-                      <Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden="true" />
-                      <span>Traduction…</span>
-                    </span>
-                  )}
-
-                  <button
-                    type="button"
-                    onClick={() => onSelectChapter(idx, true)}
-                    disabled={isTranslating}
-                    aria-label={`Écouter « ${displayTitle} »`}
-                    className={`inline-flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-semibold whitespace-nowrap transition-colors focus-visible:outline-2 focus-visible:outline-[#d9531e] disabled:opacity-45 ${
-                      isCurrent
-                        ? 'bg-[#d9531e] text-white hover:bg-[#c24515]'
-                        : 'bg-[#1c1e21] text-[#f7f5f0] hover:bg-[#31343a]'
-                    }`}
-                  >
-                    <Play className="h-3.5 w-3.5 fill-current" aria-hidden="true" />
-                    <span>{isCurrent && isPlaying ? 'En cours' : 'Écouter'}</span>
-                  </button>
-
-                  <button
-                    type="button"
-                    onClick={() => onExportChapterMp3(idx)}
-                    disabled={isExporting || isTranslating}
-                    aria-label={`Télécharger « ${displayTitle} » en MP3`}
-                    className="inline-flex items-center gap-1.5 rounded-lg border border-[#cfc9bd] bg-[#f7f5f0] px-3 py-1.5 text-xs font-medium text-[#25272b] whitespace-nowrap transition-colors hover:bg-[#ece8df] focus-visible:outline-2 focus-visible:outline-[#d9531e] disabled:opacity-45"
-                  >
-                    <Download className="h-3.5 w-3.5 text-[#d9531e]" aria-hidden="true" />
-                    <span>MP3</span>
-                  </button>
-                </div>
                 </li>
               );
             })}

@@ -4,6 +4,7 @@ export interface Mp3SegmentDspOptions {
   pitchSemitones: number;
   pauseDurationSeconds: number;
   includeEndPause: boolean;
+  hdVoiceEnhanced?: boolean;
 }
 
 export type Mp3WorkerRequest =

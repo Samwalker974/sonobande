@@ -1,11 +1,18 @@
 import {
+  AlertCircle,
   Bookmark,
   BookmarkCheck,
+  CheckCircle2,
+  ChevronDown,
   Disc3,
+  Download,
   Eye,
   EyeOff,
   FastForward,
+  FileText,
+  FolderOpen,
   Languages,
+  ListMusic,
   Loader2,
   Minimize2,
   Pause,
@@ -15,24 +22,37 @@ import {
   SkipBack,
   SkipForward,
   SlidersHorizontal,
+  Sparkles,
   Square,
   Volume2,
   VolumeX,
+  X,
 } from 'lucide-react';
 import { useEffect, useMemo, useState } from 'react';
+import { NEURAL_FRENCH_VOICES } from '../constants/voices';
 import type {
   BookSession,
   ChapterItem,
+  NeuralVoiceId,
   TransportState,
+  VoiceRuntimeStatus,
 } from '../types/walkman';
 import { DEFAULT_PAUSE_DURATION_SECONDS } from '../utils/audioDsp';
 import { formatPitchLabel, formatTimecode } from '../utils/bookSplitter';
+import {
+  buildBookToc,
+  formatTocCompactBadge,
+  formatTocCompositionSummary,
+  formatTocLocationLabel,
+} from '../utils/bookToc';
 import { stripParasiticCharacters } from '../utils/speechSanitizer';
 
 interface FullscreenListeningViewProps {
   session: BookSession | null;
   activeChapter: ChapterItem | null;
   activeChapterIndex: number;
+  neuralVoiceId: NeuralVoiceId;
+  voiceStatuses: Record<NeuralVoiceId, VoiceRuntimeStatus>;
   transportState: TransportState;
   activeSegmentIndex: number;
   totalSegmentsInChapter: number;
@@ -42,6 +62,7 @@ interface FullscreenListeningViewProps {
   speed: number;
   pitchSemitones: number;
   pauseDurationSeconds: number;
+  hdVoiceEnhanced: boolean;
   volume: number;
   muted: boolean;
   isExporting: boolean;
@@ -56,12 +77,15 @@ interface FullscreenListeningViewProps {
   onFastForward: () => void;
   onPrevChapter: () => void;
   onNextChapter: () => void;
+  onSelectChapter: (chapterIndex: number) => void;
   onPrevSegment: () => void;
   onNextSegment: () => void;
   onSeekSegment: (seconds: number) => void;
   onSpeedChange: (speed: number) => void;
   onPitchChange: (semitones: number) => void;
   onPauseDurationChange: (seconds: number) => void;
+  onToggleHdVoice: () => void;
+  onSelectOrDownloadVoice: (voiceId: NeuralVoiceId) => void;
   onResetTuning: () => void;
   onVolumeChange: (volume: number) => void;
   onToggleMute: () => void;
@@ -69,12 +93,35 @@ interface FullscreenListeningViewProps {
   onTranslateActiveChapter: () => void;
 }
 
-const SPEED_PRESETS = [0.75, 1.0, 1.25, 1.5];
+const SPEED_PRESETS = [
+  { label: 'Lent', value: 0.85 },
+  { label: 'Normal', value: 1.0 },
+  { label: 'Dynamique', value: 1.2 },
+  { label: 'Rapide', value: 1.45 },
+];
+const PITCH_PRESETS = [
+  { label: 'Plus grave', value: -2.5 },
+  { label: 'Naturel', value: 0 },
+  { label: 'Plus aigu', value: 2.5 },
+];
+const PAUSE_PRESETS = [
+  { label: 'Rapide (0 s)', value: 0 },
+  { label: 'Naturelle (0.3 s)', value: 0.3 },
+  { label: 'Posée (0.7 s)', value: 0.7 },
+];
+
+function describePitchShort(semitones: number): string {
+  if (semitones <= -0.5) return 'Grave';
+  if (semitones >= 0.5) return 'Aigu';
+  return 'Naturel';
+}
 
 export function FullscreenListeningView({
   session,
   activeChapter,
   activeChapterIndex,
+  neuralVoiceId,
+  voiceStatuses,
   transportState,
   activeSegmentIndex,
   totalSegmentsInChapter,
@@ -84,6 +131,7 @@ export function FullscreenListeningView({
   speed,
   pitchSemitones,
   pauseDurationSeconds,
+  hdVoiceEnhanced,
   volume,
   muted,
   isExporting,
@@ -98,12 +146,15 @@ export function FullscreenListeningView({
   onFastForward,
   onPrevChapter,
   onNextChapter,
+  onSelectChapter,
   onPrevSegment,
   onNextSegment,
   onSeekSegment,
   onSpeedChange,
   onPitchChange,
   onPauseDurationChange,
+  onToggleHdVoice,
+  onSelectOrDownloadVoice,
   onResetTuning,
   onVolumeChange,
   onToggleMute,
@@ -112,6 +163,7 @@ export function FullscreenListeningView({
 }: FullscreenListeningViewProps) {
   const [showExcerpt, setShowExcerpt] = useState(true);
   const [showTuning, setShowTuning] = useState(false);
+  const [showChapters, setShowChapters] = useState(false);
 
   useEffect(() => {
     const handleKeyDown = (event: KeyboardEvent) => {
@@ -164,9 +216,23 @@ export function FullscreenListeningView({
                 : 'Prêt'
               : 'Aucun livre';
 
+  const toc = useMemo(
+    () => (session ? buildBookToc(session.chapters, session.title) : null),
+    [session]
+  );
+  const activeTocEntry = toc?.entries[activeChapterIndex] ?? null;
+
   const chapterTitle = isUntranslated
-    ? `Chapitre ${activeChapterIndex + 1} (anglais — à traduire)`
-    : activeChapter?.title ?? 'Aucun chapitre actif';
+    ? `${activeTocEntry?.displayTitle ?? `Section ${activeChapterIndex + 1}`} (anglais — à traduire)`
+    : activeTocEntry?.displayTitle ?? activeChapter?.title ?? 'Aucune section active';
+
+  const locationSummary = toc
+    ? formatTocLocationLabel(toc, activeChapterIndex)
+    : `Chapitre ${activeChapterIndex + 1} / ${totalChapters}`;
+
+  const compactLocationBadge = toc
+    ? formatTocCompactBadge(toc, activeChapterIndex)
+    : `${activeChapterIndex + 1}/${totalChapters}`;
 
   const effectiveDuration = Math.max(segmentDuration, segmentCurrentTime);
 
@@ -247,11 +313,19 @@ export function FullscreenListeningView({
             {session?.title ?? 'Sonobande'}
           </h1>
 
-          {/* 2. Chapitre X / Y · Segment A / B · Pause / Lecture */}
+          {/* 2. Chapitre X / Y · Segment A / B · Pause / Lecture (cliquable pour choisir un chapitre) */}
           <div className="mt-3 flex justify-center">
-            <p
+            <button
+              type="button"
+              disabled={!hasBook || totalChapters <= 1}
+              onClick={() => {
+                setShowChapters((prev) => !prev);
+                setShowTuning(false);
+              }}
               data-testid="fullscreen-chapter-status"
-              className="retro-lcd-window inline-flex flex-wrap items-center justify-center gap-x-2 gap-y-1 rounded-lg px-3.5 py-1.5 font-mono text-xs font-medium tabular-nums text-[#e8c68d]"
+              aria-expanded={showChapters}
+              title={totalChapters > 1 ? 'Cliquer pour choisir un chapitre' : undefined}
+              className="retro-lcd-window inline-flex flex-wrap items-center justify-center gap-x-2 gap-y-1 rounded-lg px-3.5 py-1.5 font-mono text-xs font-medium tabular-nums text-[#e8c68d] transition-colors hover:border-[#d9531e]/70 disabled:cursor-default"
             >
               {isBuffering ? (
                 <Loader2 className="h-3.5 w-3.5 animate-spin text-[#f07645]" aria-hidden="true" />
@@ -269,16 +343,29 @@ export function FullscreenListeningView({
               )}
               <span>
                 {hasBook
-                  ? `Chapitre ${activeChapterIndex + 1} / ${totalChapters} · Segment ${activeSegmentIndex + 1} / ${Math.max(1, totalSegmentsInChapter)} · ${statusText}`
+                  ? `${locationSummary} · Segment ${activeSegmentIndex + 1} / ${Math.max(1, totalSegmentsInChapter)} · ${statusText}`
                   : 'Aucun document chargé'}
               </span>
-            </p>
+              {totalChapters > 1 && (
+                <ChevronDown
+                  className={`h-3.5 w-3.5 text-[#f07645] transition-transform ${
+                    showChapters ? 'rotate-180' : ''
+                  }`}
+                  aria-hidden="true"
+                />
+              )}
+            </button>
           </div>
 
-          {/* 3. Nom du Chapitre */}
+          {/* 3. Nom de la Partie (si imbriqué) + Nom du Chapitre / Section */}
+          {activeTocEntry?.parentPartTitle && (
+            <p className="mt-2.5 font-mono text-[11px] font-semibold uppercase tracking-wider text-[#d9b87c]">
+              {activeTocEntry.parentPartTitle}
+            </p>
+          )}
           <h2
             data-testid="fullscreen-chapter-title"
-            className="mt-3 font-display text-base font-semibold text-[#dcd6c8] sm:text-lg"
+            className={`${activeTocEntry?.parentPartTitle ? 'mt-1' : 'mt-3'} font-display text-base font-semibold text-[#dcd6c8] sm:text-lg`}
           >
             {chapterTitle}
           </h2>
@@ -383,9 +470,20 @@ export function FullscreenListeningView({
                 Compteur de bande
               </span>
               <div className="retro-lcd-window rounded-md px-3 py-1 font-mono text-xs font-semibold tracking-wider tabular-nums text-[#f3d19c]">
-                <span>{formatTimecode(segmentCurrentTime)}</span>
-                <span className="mx-1.5 text-[#6f7480]">/</span>
-                <span className="text-[#a5aab4]">{formatTimecode(effectiveDuration)}</span>
+                {segmentDuration <= 0 && segmentCurrentTime > 0 ? (
+                  <>
+                    <span>{formatTimecode(segmentCurrentTime)}</span>
+                    <span className="ml-1.5 text-[10px] uppercase tracking-widest text-[#a5aab4]">
+                      Reprise
+                    </span>
+                  </>
+                ) : (
+                  <>
+                    <span>{formatTimecode(segmentCurrentTime)}</span>
+                    <span className="mx-1.5 text-[#6f7480]">/</span>
+                    <span className="text-[#a5aab4]">{formatTimecode(effectiveDuration)}</span>
+                  </>
+                )}
               </div>
             </div>
             <label htmlFor="fullscreen-scrubber" className="sr-only">
@@ -527,6 +625,24 @@ export function FullscreenListeningView({
             </div>
 
             <div className="flex flex-wrap items-center gap-2">
+              {session && totalChapters > 1 && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    setShowChapters((prev) => !prev);
+                    setShowTuning(false);
+                  }}
+                  aria-expanded={showChapters}
+                  data-testid="fullscreen-chapters-btn"
+                  className={`mech-key-dark inline-flex items-center gap-1.5 rounded-lg px-3 py-2 text-xs font-semibold ${
+                    showChapters ? 'mech-key-pressed !border-[#d9531e] !text-[#f8c1aa]' : ''
+                  }`}
+                >
+                  <ListMusic className="h-3.5 w-3.5 text-[#f07645]" aria-hidden="true" />
+                  <span>Sommaire ({compactLocationBadge})</span>
+                </button>
+              )}
+
               <button
                 type="button"
                 onClick={onAddBookmark}
@@ -560,24 +676,142 @@ export function FullscreenListeningView({
 
               <button
                 type="button"
-                onClick={() => setShowTuning((prev) => !prev)}
+                onClick={() => {
+                  setShowTuning((prev) => !prev);
+                  setShowChapters(false);
+                }}
                 aria-expanded={showTuning}
                 className={`mech-key-dark inline-flex items-center gap-1.5 rounded-lg px-3 py-2 text-xs font-semibold ${
                   showTuning ? 'mech-key-pressed !border-[#d9531e] !text-[#f8c1aa]' : ''
                 }`}
               >
                 <SlidersHorizontal className="h-3.5 w-3.5 text-[#f07645]" aria-hidden="true" />
-                <span className="font-mono">{speed.toFixed(2)}×</span>
+                <span>Options voix</span>
               </button>
             </div>
           </div>
 
-          {/* Optional retro tuning tray (mounted only when opened) */}
+          {/* Fullscreen Structured Sommaire Drawer (Infos / Parties / Chapitres / Annexes) */}
+          {showChapters && session && toc && totalChapters > 1 && (
+            <div
+              data-testid="fullscreen-chapter-picker"
+              className="space-y-2.5 rounded-xl border border-[#353944] bg-[#15171c] p-3.5 text-xs"
+            >
+              <div className="flex items-center justify-between gap-2">
+                <div className="min-w-0">
+                  <span className="font-mono text-[11px] font-semibold uppercase tracking-wider text-[#d9b87c]">
+                    Sommaire du livre
+                  </span>
+                  <span className="ml-2 font-mono text-[10px] text-[#9fa4ae]">
+                    {formatTocCompositionSummary(toc)}
+                  </span>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setShowChapters(false)}
+                  aria-label="Fermer le sommaire"
+                  className="rounded p-1 text-[#9fa4ae] hover:bg-[#24272f] hover:text-white"
+                >
+                  <X className="h-3.5 w-3.5" aria-hidden="true" />
+                </button>
+              </div>
+              <div className="max-h-[36vh] space-y-1.5 overflow-y-auto pr-1">
+                {toc.entries.map((entry) => {
+                  const idx = entry.chapterIndex;
+                  const isActive = idx === activeChapterIndex;
+                  const needsTrans = entry.chapter.translationStatus === 'needs_translation';
+                  const isPart = entry.kind === 'part';
+                  const isFrontmatter = entry.kind === 'frontmatter';
+                  const isBackmatter = entry.kind === 'backmatter';
+                  const isNested = entry.depth === 1;
+
+                  return (
+                    <div
+                      key={entry.chapter.id}
+                      className={
+                        isNested
+                          ? `ml-3 border-l-2 pl-2.5 ${
+                              isActive ? 'border-[#d9531e]' : 'border-[#333844]'
+                            }`
+                          : isPart
+                            ? 'pt-2 first:pt-0'
+                            : ''
+                      }
+                    >
+                      <button
+                        type="button"
+                        onClick={() => {
+                          onSelectChapter(idx);
+                          setShowChapters(false);
+                        }}
+                        className={`flex w-full items-center justify-between gap-2 rounded-lg border px-3 py-2 text-left transition-colors ${
+                          isActive
+                            ? 'border-[#d9531e] bg-[#2a1f1b] text-[#f7f4ec]'
+                            : isPart
+                              ? 'border-[#524530] bg-[#221e18] text-[#f2dba9] hover:border-[#786342] hover:bg-[#2a241c]'
+                              : isFrontmatter || isBackmatter
+                                ? 'border-[#2a2e38] bg-[#181b21] text-[#b7bcc7] hover:border-[#434857] hover:bg-[#20242d]'
+                                : 'border-[#2f333d] bg-[#1c1f26] text-[#dcd6c8] hover:border-[#4b5160] hover:bg-[#242832]'
+                        }`}
+                      >
+                        <div className="flex min-w-0 items-center gap-2">
+                          {isPart ? (
+                            <span className="inline-flex shrink-0 items-center gap-1 rounded bg-[#3b3021] px-1.5 py-0.5 font-mono text-[9px] font-bold uppercase tracking-wider text-[#f3d19c]">
+                              <FolderOpen className="h-2.5 w-2.5 text-[#f07645]" aria-hidden="true" />
+                              <span>{entry.badgeLabel}</span>
+                            </span>
+                          ) : isFrontmatter ? (
+                            <span className="inline-flex shrink-0 items-center gap-1 rounded border border-[#3a3f4c] bg-[#22252e] px-1.5 py-0.5 font-mono text-[9px] font-semibold uppercase text-[#9fa4ae]">
+                              <FileText className="h-2.5 w-2.5" aria-hidden="true" />
+                              <span>Infos</span>
+                            </span>
+                          ) : isBackmatter ? (
+                            <span className="inline-flex shrink-0 items-center rounded border border-[#3a3f4c] bg-[#22252e] px-1.5 py-0.5 font-mono text-[9px] font-semibold uppercase text-[#9fa4ae]">
+                              Fin
+                            </span>
+                          ) : (
+                            <span
+                              className={`font-mono text-[11px] font-bold tabular-nums ${
+                                isActive ? 'text-[#f07645]' : 'text-[#8c919c]'
+                              }`}
+                            >
+                              {String(entry.chapterNumber ?? idx + 1).padStart(2, '0')}
+                            </span>
+                          )}
+                          <span
+                            className={`truncate ${
+                              isPart ? 'font-display text-xs font-bold' : 'font-medium'
+                            }`}
+                          >
+                            {entry.displayTitle}
+                          </span>
+                        </div>
+                        <div className="flex shrink-0 items-center gap-1.5">
+                          {needsTrans && (
+                            <span className="rounded border border-[#5a4a33] bg-[#292218] px-1.5 py-0.5 font-mono text-[9px] text-[#e3c38a]">
+                              EN → FR
+                            </span>
+                          )}
+                          {isActive && (
+                            <span className="rounded bg-[#d9531e] px-1.5 py-0.5 font-mono text-[9px] font-bold uppercase text-white">
+                              Actif
+                            </span>
+                          )}
+                        </div>
+                      </button>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+
+          {/* Optional retro voice options tray (mounted only when opened) */}
           {showTuning && (
-            <div className="space-y-3 rounded-xl border border-[#353944] bg-[#15171c] p-3.5 text-xs">
+            <div className="space-y-3.5 rounded-xl border border-[#353944] bg-[#15171c] p-3.5 text-xs">
               <div className="flex items-center justify-between">
                 <span className="font-mono text-[11px] font-semibold uppercase tracking-wider text-[#d9b87c]">
-                  Égaliseur de bande · Vitesse / Ton / Pauses
+                  Options de la voix · Mémorisées automatiquement
                 </span>
                 {isTuningModified && (
                   <button
@@ -591,13 +825,90 @@ export function FullscreenListeningView({
                 )}
               </div>
 
-              <div className="grid grid-cols-1 gap-3.5 sm:grid-cols-3">
+              <div className="space-y-2">
+                <span className="font-mono text-[10px] font-semibold uppercase tracking-wider text-[#9fa4ae]">
+                  Voix française (1 clic pour activer ou télécharger)
+                </span>
+                <div className="grid grid-cols-2 gap-1.5 sm:grid-cols-4">
+                  {NEURAL_FRENCH_VOICES.map((voice) => {
+                    const status = voiceStatuses[voice.id];
+                    const isSelected = voice.id === neuralVoiceId;
+                    const isInstalled = status?.installState === 'installed';
+                    const isDownloading = status?.installState === 'downloading';
+                    const isFailed =
+                      status?.healthState === 'failed' || status?.installState === 'error';
+                    const isUnsupported = status?.installState === 'unsupported';
+
+                    return (
+                      <button
+                        key={voice.id}
+                        type="button"
+                        disabled={isDownloading || isUnsupported}
+                        onClick={() => onSelectOrDownloadVoice(voice.id)}
+                        aria-pressed={isSelected}
+                        className={`flex flex-col gap-0.5 rounded-lg border px-2.5 py-2 text-left transition-colors disabled:opacity-55 ${
+                          isSelected
+                            ? 'border-[#d9531e] bg-[#d9531e] text-white'
+                            : 'border-[#3f4450] bg-[#24272f] text-[#e6e2da] hover:bg-[#30343f]'
+                        }`}
+                      >
+                        <div className="flex w-full items-center justify-between gap-1">
+                          <span className="truncate font-bold">{voice.name}</span>
+                          {isDownloading ? (
+                            <Loader2 className="h-3 w-3 shrink-0 animate-spin" aria-hidden="true" />
+                          ) : isFailed ? (
+                            <AlertCircle className="h-3 w-3 shrink-0 text-[#f6a58e]" aria-hidden="true" />
+                          ) : isInstalled ? (
+                            <CheckCircle2
+                              className={`h-3 w-3 shrink-0 ${isSelected ? 'text-white' : 'text-[#7ad096]'}`}
+                              aria-hidden="true"
+                            />
+                          ) : (
+                            <Download className="h-3 w-3 shrink-0 text-[#f07645]" aria-hidden="true" />
+                          )}
+                        </div>
+                        <span
+                          className={`truncate text-[10px] ${
+                            isSelected ? 'text-white/85' : 'text-[#a3a8b3]'
+                          }`}
+                        >
+                          {isDownloading
+                            ? `Téléch. ${status.downloadPercent}%`
+                            : isInstalled
+                              ? `${voice.gender} · ${voice.timbre}`
+                              : `Télécharger (~${voice.approxSizeMb} Mo)`}
+                        </span>
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+
+              <div className="grid grid-cols-1 gap-4 border-t border-[#2c303a] pt-3 sm:grid-cols-3">
                 <div>
-                  <div className="mb-1 flex justify-between text-[#d4d0c5]">
-                    <label htmlFor="fs-speed">Vitesse</label>
+                  <div className="mb-1.5 flex justify-between text-[#d4d0c5]">
+                    <label htmlFor="fs-speed" className="font-semibold">
+                      Vitesse
+                    </label>
                     <span className="font-mono font-semibold tabular-nums text-[#f3d19c]">
                       {speed.toFixed(2)}×
                     </span>
+                  </div>
+                  <div className="mb-2 grid grid-cols-2 gap-1">
+                    {SPEED_PRESETS.map((preset) => (
+                      <button
+                        key={preset.label}
+                        type="button"
+                        onClick={() => onSpeedChange(preset.value)}
+                        className={`rounded border px-2 py-1 text-[11px] font-semibold ${
+                          Math.abs(speed - preset.value) < 0.03
+                            ? 'border-[#d9531e] bg-[#d9531e] text-white'
+                            : 'border-[#3f4450] bg-[#24272f] text-[#d5d8e0] hover:bg-[#30343f]'
+                        }`}
+                      >
+                        {preset.label}
+                      </button>
+                    ))}
                   </div>
                   <input
                     id="fs-speed"
@@ -609,30 +920,32 @@ export function FullscreenListeningView({
                     onChange={(e) => onSpeedChange(Number(e.target.value))}
                     className="walkman-fader w-full"
                   />
-                  <div className="mt-2 flex flex-wrap gap-1.5">
-                    {SPEED_PRESETS.map((preset) => (
+                </div>
+
+                <div>
+                  <div className="mb-1.5 flex justify-between text-[#d4d0c5]">
+                    <label htmlFor="fs-pitch" className="font-semibold">
+                      Timbre
+                    </label>
+                    <span className="font-mono font-semibold tabular-nums text-[#f3d19c]">
+                      {describePitchShort(pitchSemitones)} ({formatPitchLabel(pitchSemitones)})
+                    </span>
+                  </div>
+                  <div className="mb-2 grid grid-cols-3 gap-1">
+                    {PITCH_PRESETS.map((preset) => (
                       <button
-                        key={preset}
+                        key={preset.label}
                         type="button"
-                        onClick={() => onSpeedChange(preset)}
-                        className={`rounded border px-2 py-0.5 font-mono text-[11px] font-semibold ${
-                          Math.abs(speed - preset) < 0.01
+                        onClick={() => onPitchChange(preset.value)}
+                        className={`rounded border px-1.5 py-1 text-[10px] font-semibold ${
+                          Math.abs(pitchSemitones - preset.value) < 0.3
                             ? 'border-[#d9531e] bg-[#d9531e] text-white'
                             : 'border-[#3f4450] bg-[#24272f] text-[#d5d8e0] hover:bg-[#30343f]'
                         }`}
                       >
-                        {preset.toFixed(2)}×
+                        {preset.label.replace('Plus ', '')}
                       </button>
                     ))}
-                  </div>
-                </div>
-
-                <div>
-                  <div className="mb-1 flex justify-between text-[#d4d0c5]">
-                    <label htmlFor="fs-pitch">Hauteur</label>
-                    <span className="font-mono font-semibold tabular-nums text-[#f3d19c]">
-                      {formatPitchLabel(pitchSemitones)}
-                    </span>
                   </div>
                   <input
                     id="fs-pitch"
@@ -647,11 +960,29 @@ export function FullscreenListeningView({
                 </div>
 
                 <div>
-                  <div className="mb-1 flex justify-between text-[#d4d0c5]">
-                    <label htmlFor="fs-pause">Pause ponctuation</label>
+                  <div className="mb-1.5 flex justify-between text-[#d4d0c5]">
+                    <label htmlFor="fs-pause" className="font-semibold">
+                      Respiration
+                    </label>
                     <span className="font-mono font-semibold tabular-nums text-[#f3d19c]">
-                      {pauseDurationSeconds.toFixed(1)} s
+                      {pauseDurationSeconds === 0 ? 'Aucune' : `${pauseDurationSeconds.toFixed(1)} s`}
                     </span>
+                  </div>
+                  <div className="mb-2 grid grid-cols-3 gap-1">
+                    {PAUSE_PRESETS.map((preset) => (
+                      <button
+                        key={preset.label}
+                        type="button"
+                        onClick={() => onPauseDurationChange(preset.value)}
+                        className={`rounded border px-1.5 py-1 text-[10px] font-semibold ${
+                          Math.abs(pauseDurationSeconds - preset.value) < 0.05
+                            ? 'border-[#d9531e] bg-[#d9531e] text-white'
+                            : 'border-[#3f4450] bg-[#24272f] text-[#d5d8e0] hover:bg-[#30343f]'
+                        }`}
+                      >
+                        {preset.label.split(' ')[0]}
+                      </button>
+                    ))}
                   </div>
                   <input
                     id="fs-pause"
@@ -664,6 +995,29 @@ export function FullscreenListeningView({
                     className="walkman-fader w-full"
                   />
                 </div>
+              </div>
+
+              <div className="flex flex-wrap items-center justify-between gap-2 border-t border-[#2c303a] pt-3">
+                <div className="flex items-center gap-2 text-[#e6e2da]">
+                  <Sparkles className="h-3.5 w-3.5 text-[#f07645]" aria-hidden="true" />
+                  <span className="font-semibold">Voix HD &amp; fluide</span>
+                  <span className="hidden text-[#9fa4ae] sm:inline">
+                    · Voix plus nette, douce et régulière
+                  </span>
+                </div>
+                <button
+                  type="button"
+                  role="switch"
+                  aria-checked={hdVoiceEnhanced}
+                  onClick={onToggleHdVoice}
+                  className={`rounded-lg border px-3 py-1 font-mono text-[11px] font-semibold transition-colors ${
+                    hdVoiceEnhanced
+                      ? 'border-[#d9531e] bg-[#d9531e] text-white'
+                      : 'border-[#3f4450] bg-[#24272f] text-[#d5d8e0] hover:bg-[#30343f]'
+                  }`}
+                >
+                  {hdVoiceEnhanced ? 'HD ACTIVÉ' : 'HD DÉSACTIVÉ'}
+                </button>
               </div>
             </div>
           )}

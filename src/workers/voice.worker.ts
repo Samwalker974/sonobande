@@ -1,7 +1,7 @@
 import type { NeuralVoiceId } from '../types/walkman';
 import type { VoiceWorkerRequest, VoiceWorkerResponse } from '../utils/browserVoice';
 
-const MIN_VALID_ONNX_BYTES = 1_000_000;
+const MIN_VALID_ONNX_BYTES = 500_000;
 const MIN_VALID_JSON_BYTES = 100;
 
 let predictPromise: Promise<typeof import('@diffusionstudio/vits-web').predict> | null = null;

@@ -1,15 +1,47 @@
 import type {
+  NeuralVoiceId,
   NeuralVoiceProfile,
   SampleScript,
 } from '../types/walkman';
+
+export const DEFAULT_NEURAL_VOICE_ID: NeuralVoiceId = 'fr_FR-siwis-medium';
 
 export const NEURAL_FRENCH_VOICES: NeuralVoiceProfile[] = [
   {
     id: 'fr_FR-siwis-medium',
     name: 'Siwis',
     gender: 'Féminine',
-    timbre: 'Claire et naturelle',
-    description: 'Voix Piper française téléchargée une fois puis utilisée hors ligne depuis le stockage privé du navigateur.',
+    quality: 'Medium',
+    approxSizeMb: 63,
+    timbre: 'Claire et équilibrée',
+    description: 'Voix polyvalente très nette pour les romans, articles et essais.',
+  },
+  {
+    id: 'fr_FR-upmc-medium',
+    name: 'UPMC',
+    gender: 'Féminine',
+    quality: 'Medium',
+    approxSizeMb: 63,
+    timbre: 'Douce et posée',
+    description: 'Timbre fluide et naturel, particulièrement agréable en écoute prolongée.',
+  },
+  {
+    id: 'fr_FR-tom-medium',
+    name: 'Tom',
+    gender: 'Masculine',
+    quality: 'Medium',
+    approxSizeMb: 63,
+    timbre: 'Grave et calme',
+    description: 'Voix masculine posée, idéale pour les essais, récits et documentaires.',
+  },
+  {
+    id: 'fr_FR-mls-medium',
+    name: 'MLS',
+    gender: 'Féminine',
+    quality: 'Medium',
+    approxSizeMb: 63,
+    timbre: 'Narration livre audio',
+    description: 'Entraînée sur un corpus de livres audio français, rythme régulier.',
   },
 ];
 
