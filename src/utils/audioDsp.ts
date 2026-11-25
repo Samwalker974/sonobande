@@ -331,7 +331,7 @@ export function processAudioSpeedPitch(
   const clampedPitch = Math.max(-6, Math.min(6, pitchSemitones));
 
   if (Math.abs(clampedSpeed - 1.0) < 1e-3 && Math.abs(clampedPitch) < 1e-3) {
-    return new Float32Array(samples);
+    return samples;
   }
 
   const pitchFactor = Math.pow(2, clampedPitch / 12);
@@ -372,29 +372,6 @@ interface BiquadCoefficients {
   a2: number;
 }
 
-function applyBiquadFilter(
-  input: Float32Array,
-  coeff: BiquadCoefficients
-): Float32Array {
-  const output = new Float32Array(input.length);
-  let x1 = 0;
-  let x2 = 0;
-  let y1 = 0;
-  let y2 = 0;
-  const { b0, b1, b2, a1, a2 } = coeff;
-
-  for (let i = 0; i < input.length; i++) {
-    const x0 = input[i];
-    const y0 = b0 * x0 + b1 * x1 + b2 * x2 - a1 * y1 - a2 * y2;
-    output[i] = y0;
-    x2 = x1;
-    x1 = x0;
-    y2 = y1;
-    y1 = y0;
-  }
-  return output;
-}
-
 function createHighPassCoefficients(
   freqHz: number,
   sampleRate: number,
@@ -410,6 +387,26 @@ function createHighPassCoefficients(
     b0: (1 + cosW) / 2 / a0,
     b1: -(1 + cosW) / a0,
     b2: (1 + cosW) / 2 / a0,
+    a1: (-2 * cosW) / a0,
+    a2: (1 - alpha) / a0,
+  };
+}
+
+function createLowPassCoefficients(
+  freqHz: number,
+  sampleRate: number,
+  q = 0.707
+): BiquadCoefficients {
+  const omega = (2 * Math.PI * freqHz) / sampleRate;
+  const sinW = Math.sin(omega);
+  const cosW = Math.cos(omega);
+  const alpha = sinW / (2 * q);
+  const a0 = 1 + alpha;
+
+  return {
+    b0: (1 - cosW) / 2 / a0,
+    b1: (1 - cosW) / a0,
+    b2: (1 - cosW) / 2 / a0,
     a1: (-2 * cosW) / a0,
     a2: (1 - alpha) / a0,
   };
@@ -441,9 +438,10 @@ function createPeakingEqCoefficients(
  * Real-time-capable studio voice mastering chain for smoother, clearer, more natural
  * audiobook playback and MP3 export:
  * 1) 80 Hz high-pass to remove neural sub-rumble / DC offset
- * 2) Subtle vocal EQ (+1.4 dB warmth @ 210 Hz, -1.6 dB nasal cut @ 1050 Hz, +2.2 dB HD presence @ 3.4 kHz)
- * 3) Gentle RMS envelope leveling + tanh soft limiter for consistent fluid dynamics
- * 4) 10 ms edge de-click micro-fades
+ * 2) Subtle vocal EQ (+1.2 dB warmth @ 210 Hz, -1.5 dB nasal cut @ 1050 Hz, +1.0 dB clarity @ 2.9 kHz)
+ * 3) Gentle 8.2 kHz low-pass de-hiss filter on 22 kHz+ neural voices to tame vocoder buzz
+ * 4) Smooth envelope leveling + C1-continuous soft-knee limiter (zero step discontinuity / crackle)
+ * 5) 10 ms edge de-click micro-fades
  */
 export function enhanceVoiceHdFluid(
   samples: Float32Array,
@@ -453,25 +451,77 @@ export function enhanceVoiceHdFluid(
     return samples;
   }
 
-  let out = applyBiquadFilter(samples, createHighPassCoefficients(80, sampleRate, 0.707));
+  const hp = createHighPassCoefficients(80, sampleRate, 0.707);
+  const useEq = sampleRate >= 16000;
+  const useDeHiss = sampleRate >= 20000;
+  const eq1 = useEq ? createPeakingEqCoefficients(210, sampleRate, 1.2, 0.8) : null;
+  const eq2 = useEq ? createPeakingEqCoefficients(1050, sampleRate, -1.5, 1.1) : null;
+  const eq3 = useEq
+    ? createPeakingEqCoefficients(Math.min(2900, sampleRate * 0.32), sampleRate, 1.0, 0.9)
+    : null;
+  const lp = useDeHiss
+    ? createLowPassCoefficients(Math.min(8200, sampleRate * 0.42), sampleRate, 0.707)
+    : null;
 
-  if (sampleRate >= 16000) {
-    out = applyBiquadFilter(out, createPeakingEqCoefficients(210, sampleRate, 1.4, 0.8));
-    out = applyBiquadFilter(out, createPeakingEqCoefficients(1050, sampleRate, -1.6, 1.1));
-    const presenceHz = Math.min(3400, sampleRate * 0.35);
-    out = applyBiquadFilter(out, createPeakingEqCoefficients(presenceHz, sampleRate, 2.2, 0.9));
-  }
+  // Smooth dynamic leveling (soft-knee studio speech compressor + C1-continuous soft limiter)
+  const attackCoeff = Math.exp(-1 / (sampleRate * 0.018));
+  const releaseCoeff = Math.exp(-1 / (sampleRate * 0.18));
+  const threshold = 0.28;
+  const ratio = 2.2;
+  const makeupGain = 1.1;
+  const limiterKnee = 0.82;
+  const limiterCeiling = 0.96;
+  const limiterHeadroom = limiterCeiling - limiterKnee;
 
-  // Smooth dynamic leveling (soft-knee studio speech compressor + gentle soft limiter)
-  const attackCoeff = Math.exp(-1 / (sampleRate * 0.012));
-  const releaseCoeff = Math.exp(-1 / (sampleRate * 0.14));
-  const threshold = 0.24;
-  const ratio = 2.6;
-  const makeupGain = 1.18;
-
+  // Single-pass fused filter + compressor chain (1 allocation instead of multiple intermediate buffers)
+  const out = new Float32Array(samples.length);
+  let hpX1 = 0, hpX2 = 0, hpY1 = 0, hpY2 = 0;
+  let e1X1 = 0, e1X2 = 0, e1Y1 = 0, e1Y2 = 0;
+  let e2X1 = 0, e2X2 = 0, e2Y1 = 0, e2Y2 = 0;
+  let e3X1 = 0, e3X2 = 0, e3Y1 = 0, e3Y2 = 0;
+  let lpX1 = 0, lpX2 = 0, lpY1 = 0, lpY2 = 0;
   let env = 0;
-  for (let i = 0; i < out.length; i++) {
-    const absVal = Math.abs(out[i]);
+
+  for (let i = 0; i < samples.length; i++) {
+    const x0 = samples[i];
+    let s = hp.b0 * x0 + hp.b1 * hpX1 + hp.b2 * hpX2 - hp.a1 * hpY1 - hp.a2 * hpY2;
+    hpX2 = hpX1;
+    hpX1 = x0;
+    hpY2 = hpY1;
+    hpY1 = s;
+
+    if (useEq && eq1 && eq2 && eq3) {
+      const y1 = eq1.b0 * s + eq1.b1 * e1X1 + eq1.b2 * e1X2 - eq1.a1 * e1Y1 - eq1.a2 * e1Y2;
+      e1X2 = e1X1;
+      e1X1 = s;
+      e1Y2 = e1Y1;
+      e1Y1 = y1;
+
+      const y2 = eq2.b0 * y1 + eq2.b1 * e2X1 + eq2.b2 * e2X2 - eq2.a1 * e2Y1 - eq2.a2 * e2Y2;
+      e2X2 = e2X1;
+      e2X1 = y1;
+      e2Y2 = e2Y1;
+      e2Y1 = y2;
+
+      const y3 = eq3.b0 * y2 + eq3.b1 * e3X1 + eq3.b2 * e3X2 - eq3.a1 * e3Y1 - eq3.a2 * e3Y2;
+      e3X2 = e3X1;
+      e3X1 = y2;
+      e3Y2 = e3Y1;
+      e3Y1 = y3;
+
+      s = y3;
+    }
+
+    if (useDeHiss && lp) {
+      const yl = lp.b0 * s + lp.b1 * lpX1 + lp.b2 * lpX2 - lp.a1 * lpY1 - lp.a2 * lpY2;
+      lpX2 = lpX1;
+      lpX1 = s;
+      lpY2 = lpY1;
+      lpY1 = yl;
+      s = yl;
+    }
+
+    const absVal = s < 0 ? -s : s;
     const coeff = absVal > env ? attackCoeff : releaseCoeff;
     env = coeff * env + (1 - coeff) * absVal;
 
@@ -481,10 +531,21 @@ export function enhanceVoiceHdFluid(
       gain = (compressed / env) * makeupGain;
     }
 
-    const leveled = out[i] * gain;
-    // Soft analog-style saturation ceiling so peaks stay smooth and never hard-clip
-    const limited = Math.abs(leveled) > 0.78 ? Math.tanh(leveled * 1.12) / Math.tanh(1.12) : leveled;
-    out[i] = Number.isFinite(limited) ? Math.max(-0.98, Math.min(0.98, limited)) : 0;
+    const leveled = s * gain;
+    const absLeveled = leveled < 0 ? -leveled : leveled;
+    // C1-continuous soft-knee limiter: exact value & slope match at limiterKnee (zero step crackle)
+    const limited =
+      absLeveled > limiterKnee
+        ? (leveled >= 0 ? 1 : -1) *
+          (limiterKnee + limiterHeadroom * Math.tanh((absLeveled - limiterKnee) / limiterHeadroom))
+        : leveled;
+    out[i] = Number.isFinite(limited)
+      ? limited > 0.98
+        ? 0.98
+        : limited < -0.98
+          ? -0.98
+          : limited
+      : 0;
   }
 
   // 10 ms edge fades to eliminate junction clicks between segments/phrases

@@ -40,8 +40,8 @@ export const NEURAL_FRENCH_VOICES: NeuralVoiceProfile[] = [
     gender: 'Féminine',
     quality: 'Medium',
     approxSizeMb: 63,
-    timbre: 'Narration livre audio',
-    description: 'Entraînée sur un corpus de livres audio français, rythme régulier.',
+    timbre: 'Multi-locuteurs (expérimental)',
+    description: 'Modèle multi-locuteurs pouvant produire des artefacts ; préférez Siwis, UPMC ou Tom pour une lecture nette.',
   },
 ];
 

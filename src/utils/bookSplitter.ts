@@ -201,10 +201,56 @@ export function splitTextAtPausePunctuation(
   return phrases;
 }
 
+const MAX_VOICE_PHRASE_CHARS = 240;
+
+function splitLongVoiceSentence(sentence: string, maxChars: number): string[] {
+  const trimmed = sentence.trim();
+  if (trimmed.length <= maxChars) return [trimmed];
+
+  const clauses = trimmed.split(/(?<=[;:,—–])\s+/);
+  const out: string[] = [];
+  let current = '';
+
+  const flush = () => {
+    if (current.trim()) {
+      out.push(current.trim());
+      current = '';
+    }
+  };
+
+  for (const clause of clauses) {
+    const cleanClause = clause.trim();
+    if (!cleanClause) continue;
+    if ((current ? `${current} ${cleanClause}` : cleanClause).length <= maxChars) {
+      current = current ? `${current} ${cleanClause}` : cleanClause;
+      continue;
+    }
+
+    flush();
+    if (cleanClause.length <= maxChars) {
+      current = cleanClause;
+      continue;
+    }
+
+    const words = cleanClause.split(/\s+/);
+    for (const word of words) {
+      if ((current ? `${current} ${word}` : word).length <= maxChars) {
+        current = current ? `${current} ${word}` : word;
+      } else {
+        flush();
+        current = word;
+      }
+    }
+  }
+
+  flush();
+  return out.length > 0 ? out : [trimmed];
+}
+
 /**
- * Splits a segment into sentence-level chunks only when explicit extra pauses are requested.
- * When extra pauses are disabled (0 s), returns a single chunk so Piper synthesizes the
- * entire segment in one ONNX call instead of reloading the model at every comma.
+ * Always splits a segment into clean sentence-level chunks (<= 240 chars) so Piper VITS
+ * models never receive long multi-sentence blocks that cause attention drift, stuttering,
+ * or vocal artifacts. Marks `pauseAfter` only on sentence endings when extra pauses are enabled.
  */
 export function splitTextForVoiceSynthesis(
   text: string,
@@ -212,11 +258,8 @@ export function splitTextForVoiceSynthesis(
 ): Array<{ text: string; pauseAfter: boolean }> {
   const trimmed = text.trim();
   if (!trimmed) return [];
-  if (!enableExtraPauses) {
-    return [{ text: trimmed, pauseAfter: false }];
-  }
 
-  const phrases: Array<{ text: string; pauseAfter: boolean }> = [];
+  const sentences: Array<{ text: string; endsSentence: boolean }> = [];
   let start = 0;
 
   for (let index = 0; index < trimmed.length; index++) {
@@ -234,16 +277,29 @@ export function splitTextForVoiceSynthesis(
     while (end < trimmed.length && /[.!?…»”"')\]]/u.test(trimmed[end] ?? '')) end++;
 
     const sentence = trimmed.slice(start, end).trim();
-    if (sentence) phrases.push({ text: sentence, pauseAfter: true });
+    if (sentence) sentences.push({ text: sentence, endsSentence: true });
     start = end;
     index = end - 1;
   }
 
   const remainder = trimmed.slice(start).trim();
-  if (remainder) phrases.push({ text: remainder, pauseAfter: false });
-  if (phrases.length === 0) {
-    return [{ text: trimmed, pauseAfter: false }];
+  if (remainder) sentences.push({ text: remainder, endsSentence: false });
+  if (sentences.length === 0) {
+    sentences.push({ text: trimmed, endsSentence: false });
   }
+
+  const phrases: Array<{ text: string; pauseAfter: boolean }> = [];
+  for (const { text: sentenceText, endsSentence } of sentences) {
+    const parts = splitLongVoiceSentence(sentenceText, MAX_VOICE_PHRASE_CHARS);
+    for (let i = 0; i < parts.length; i++) {
+      const isLastPart = i === parts.length - 1;
+      phrases.push({
+        text: parts[i],
+        pauseAfter: enableExtraPauses && endsSentence && isLastPart,
+      });
+    }
+  }
+
   return phrases;
 }
 

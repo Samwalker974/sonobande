@@ -7,20 +7,21 @@ import type {
   TransportState,
 } from '../types/walkman';
 import {
-  encodeWavBuffer,
   enhanceVoiceHdFluid,
   insertSilenceAtOffsets,
   parseWavBuffer,
   processAudioSpeedPitch,
 } from '../utils/audioDsp';
-import { synthesizeInBrowser } from '../utils/browserVoice';
+import { synthesizePcmInBrowser } from '../utils/browserVoice';
 import { splitTextForVoiceSynthesis } from '../utils/bookSplitter';
 import { sanitizeTextForSpeech } from '../utils/speechSanitizer';
 
 export interface CachedSegmentAudio {
-  rawBytes: ArrayBuffer;
-  mimeType: 'audio/mpeg' | 'audio/wav';
+  samples: Float32Array;
+  sampleRate: number;
+  mimeType: 'audio/pcm' | 'audio/mpeg' | 'audio/wav';
   pauseOffsets: number[];
+  rawBytes?: ArrayBuffer;
 }
 
 interface DecodedPcm {
@@ -259,6 +260,22 @@ export function useWalkmanAudio({
 
   const decodeAudioToMonoPcm = useCallback(
     async (audio: CachedSegmentAudio): Promise<DecodedPcm> => {
+      if (audio.mimeType === 'audio/pcm') {
+        return {
+          samples: audio.samples,
+          sampleRate: audio.sampleRate,
+          pauseOffsets: audio.pauseOffsets ?? [],
+        };
+      }
+
+      if (!audio.rawBytes) {
+        return {
+          samples: audio.samples,
+          sampleRate: audio.sampleRate,
+          pauseOffsets: audio.pauseOffsets ?? [],
+        };
+      }
+
       const cached = pcmCacheRef.current.get(audio.rawBytes);
       if (cached) return cached;
 
@@ -361,8 +378,9 @@ export function useWalkmanAudio({
           onProgress?.(1, 1);
           const fallbackSampleRate = 22050;
           const silentResult: CachedSegmentAudio = {
-            rawBytes: encodeWavBuffer(new Float32Array(Math.round(fallbackSampleRate * 0.15)), fallbackSampleRate),
-            mimeType: 'audio/wav',
+            samples: new Float32Array(Math.round(fallbackSampleRate * 0.15)),
+            sampleRate: fallbackSampleRate,
+            mimeType: 'audio/pcm',
             pauseOffsets: [],
           };
           audioCacheRef.current.set(key, silentResult);
@@ -372,50 +390,34 @@ export function useWalkmanAudio({
         const totalPhrases = speakablePhrases.length;
         onProgress?.(0, totalPhrases);
 
-        const phraseAudio: Array<{ samples: Float32Array; sampleRate: number }> = [];
-        for (let phraseIdx = 0; phraseIdx < speakablePhrases.length; phraseIdx++) {
-          const phrase = speakablePhrases[phraseIdx];
-          if (signal?.aborted) throw new DOMException('Synthèse annulée', 'AbortError');
-          try {
-            const wavBlob = await synthesizeInBrowser(phrase.text, nVoice, signal);
-            const wav = parseWavBuffer(await wavBlob.arrayBuffer());
-            phraseAudio.push({ samples: wav.samples, sampleRate: wav.sampleRate });
-            latestRef.current.onVoiceHealthChange?.(nVoice, 'working', null);
-          } catch (err) {
-            if (!(err instanceof Error && err.name === 'AbortError')) {
-              const msg =
-                err instanceof Error
-                  ? err.message
-                  : 'Impossible de générer la voix dans le navigateur.';
-              latestRef.current.onVoiceHealthChange?.(nVoice, 'failed', msg);
-            }
-            throw err;
+        let pcmResult: { samples: Float32Array; sampleRate: number; pauseOffsets: number[] };
+        try {
+          pcmResult = await synthesizePcmInBrowser(speakablePhrases, nVoice, {
+            signal,
+            onProgress,
+          });
+          latestRef.current.onVoiceHealthChange?.(nVoice, 'working', null);
+        } catch (err) {
+          if (!(err instanceof Error && err.name === 'AbortError')) {
+            const msg =
+              err instanceof Error
+                ? err.message
+                : 'Impossible de générer la voix dans le navigateur.';
+            latestRef.current.onVoiceHealthChange?.(nVoice, 'failed', msg);
           }
-          onProgress?.(phraseIdx + 1, totalPhrases);
+          throw err;
         }
+        onProgress?.(totalPhrases, totalPhrases);
 
-        const sampleRate = phraseAudio[0]?.sampleRate;
-        if (sampleRate === undefined) {
+        if (pcmResult.samples.length === 0) {
           throw new Error('La synthèse vocale n’a produit aucun segment audio.');
         }
-        if (phraseAudio.some((phrase) => phrase.sampleRate !== sampleRate)) {
-          throw new Error('La fréquence des segments audio synthétisés ne correspond pas.');
-        }
 
-        const samples = new Float32Array(
-          phraseAudio.reduce((total, phrase) => total + phrase.samples.length, 0)
-        );
-        const pauseOffsets: number[] = [];
-        let sampleOffset = 0;
-        phraseAudio.forEach((phrase, index) => {
-          samples.set(phrase.samples, sampleOffset);
-          sampleOffset += phrase.samples.length;
-          if (speakablePhrases[index]?.pauseAfter) pauseOffsets.push(sampleOffset);
-        });
         const result: CachedSegmentAudio = {
-          rawBytes: encodeWavBuffer(samples, sampleRate),
-          mimeType: 'audio/wav',
-          pauseOffsets,
+          samples: pcmResult.samples,
+          sampleRate: pcmResult.sampleRate,
+          mimeType: 'audio/pcm',
+          pauseOffsets: pcmResult.pauseOffsets,
         };
         audioCacheRef.current.set(key, result);
         return result;

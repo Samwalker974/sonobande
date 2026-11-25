@@ -115,16 +115,31 @@ test('splitTextAtPausePunctuation preserves commas and sentence-ending punctuati
   ]);
 });
 
-test('splitTextForVoiceSynthesis uses one call by default and sentence chunks when pauses are enabled', () => {
+test('splitTextForVoiceSynthesis always splits into clean sentence chunks <= 240 chars and toggles pauseAfter', () => {
   const sample = 'Bonjour, monsieur, comment allez-vous ? Très bien ! Il mesure 3.14 mètres.';
   assert.deepEqual(splitTextForVoiceSynthesis(sample, false), [
-    { text: sample, pauseAfter: false },
+    { text: 'Bonjour, monsieur, comment allez-vous ?', pauseAfter: false },
+    { text: 'Très bien !', pauseAfter: false },
+    { text: 'Il mesure 3.14 mètres.', pauseAfter: false },
   ]);
   assert.deepEqual(splitTextForVoiceSynthesis(sample, true), [
     { text: 'Bonjour, monsieur, comment allez-vous ?', pauseAfter: true },
     { text: 'Très bien !', pauseAfter: true },
     { text: 'Il mesure 3.14 mètres.', pauseAfter: true },
   ]);
+
+  const veryLongSentence =
+    'Le vieux phare se dressait au bout de la jetée balayée par les embruns, ' +
+    'tandis que les mouettes tournaient sans relâche au-dessus du port silencieux, ' +
+    'que les bateaux grinçaient contre leurs amarres, ' +
+    'que le gardien montait lentement les marches en spirale avec sa lanterne de cuivre, ' +
+    'et que l’horizon s’éclaircissait enfin.';
+  const chunks = splitTextForVoiceSynthesis(veryLongSentence, true);
+  assert.ok(chunks.length >= 2);
+  for (const chunk of chunks) {
+    assert.ok(chunk.text.length <= 240, `Chunk exceeded 240 chars: ${chunk.text.length}`);
+  }
+  assert.equal(chunks[chunks.length - 1]?.pauseAfter, true);
 });
 
 test('sanitizeMp3Filename and formatPitchLabel work cleanly', () => {

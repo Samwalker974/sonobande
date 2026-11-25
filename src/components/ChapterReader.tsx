@@ -89,6 +89,10 @@ export function ChapterReader({
   const isUntranslated = activeChapter.translationStatus === 'needs_translation';
   const isTranslating = activeChapter.translationStatus === 'translating';
   const isTranslated = activeChapter.translationStatus === 'translated';
+  const hasPartialTranslation =
+    isTranslating &&
+    activeChapter.text.trim().length > 0 &&
+    activeChapter.text !== activeChapter.sourceText;
   const isReadyInFrench = !isUntranslated && !isTranslating;
 
   const chapterBookmarks = bookmarks.filter((bm) => bm.chapterIndex === activeChapterIndex);
@@ -220,7 +224,7 @@ export function ChapterReader({
 
       {/* Reader Body (French-only editorial display) */}
       <div className="mt-5">
-        {isTranslating ? (
+        {isTranslating && !hasPartialTranslation ? (
           <div
             role="status"
             className="flex flex-col items-center justify-center rounded-xl border border-[#e0dbd0] bg-white px-6 py-12 text-center"
@@ -230,7 +234,7 @@ export function ChapterReader({
               Traduction du chapitre en français…
             </p>
             <p className="mt-1 max-w-md text-xs text-[#5b5e64]">
-              Mise en forme naturelle en français pour la lecture à voix haute. Rien n&apos;est enregistré sur le serveur.
+              Traduction progressive par petits blocs. Les premiers paragraphes apparaissent dès qu&apos;ils sont prêts.
             </p>
           </div>
         ) : isUntranslated ? (
@@ -260,6 +264,15 @@ export function ChapterReader({
             data-testid="reader-french-content"
             className="max-h-[65vh] overflow-y-auto rounded-xl border border-[#e0dbd0] bg-white px-4 py-4 sm:max-h-[420px] sm:px-8 sm:py-6"
           >
+            {hasPartialTranslation && (
+              <div
+                role="status"
+                className="mb-3 flex items-center gap-2 rounded-lg border border-[#e6d5c3] bg-[#fbf5ee] px-3 py-2 text-xs text-[#8f2e08]"
+              >
+                <Loader2 className="h-3.5 w-3.5 shrink-0 animate-spin text-[#d9531e]" aria-hidden="true" />
+                <span>Traduction progressive en cours — les paragraphes suivants arrivent au fil de l’eau…</span>
+              </div>
+            )}
             <div className="mx-auto max-w-[70ch] space-y-3">
               {activeChapter.segments.map((_, segIdx) => {
                 const isActiveSeg = segIdx === activeSegmentIndex;

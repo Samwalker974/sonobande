@@ -135,8 +135,10 @@ function handleRequest(request: Mp3WorkerRequest): void {
     }
 
     const mp3Bytes = session.builder.finalize();
-    const mp3Buffer = new ArrayBuffer(mp3Bytes.byteLength);
-    new Uint8Array(mp3Buffer).set(mp3Bytes);
+    const mp3Buffer =
+      mp3Bytes.byteOffset === 0 && mp3Bytes.byteLength === mp3Bytes.buffer.byteLength
+        ? (mp3Bytes.buffer as ArrayBuffer)
+        : mp3Bytes.slice().buffer;
     sendMessage({ type: 'result', requestId: request.requestId, mp3Buffer }, [mp3Buffer]);
   }
 }

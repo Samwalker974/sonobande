@@ -129,9 +129,11 @@ export function formatByteSizeFr(bytes: number): string {
  * (which works reliably even in sandboxed iframes or after async user-gesture expiration).
  */
 export function createMp3ObjectUrl(mp3Bytes: Uint8Array): string {
-  const copy = new Uint8Array(mp3Bytes.byteLength);
-  copy.set(mp3Bytes);
-  const blob = new Blob([copy.buffer], { type: 'audio/mpeg' });
+  const buffer =
+    mp3Bytes.byteOffset === 0 && mp3Bytes.byteLength === mp3Bytes.buffer.byteLength
+      ? (mp3Bytes.buffer as ArrayBuffer)
+      : mp3Bytes.slice().buffer;
+  const blob = new Blob([buffer], { type: 'audio/mpeg' });
   return URL.createObjectURL(blob);
 }
 
