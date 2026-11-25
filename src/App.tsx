@@ -30,7 +30,6 @@ import type {
 import {
   DEFAULT_PAUSE_DURATION_SECONDS,
   enhanceVoiceHdFluid,
-  parseWavBuffer,
 } from './utils/audioDsp';
 import {
   applyChapterTranslation,
@@ -52,7 +51,7 @@ import {
   setLastActiveBookId,
 } from './utils/bookStorage';
 import { createBrowserMp3Session, type BrowserMp3Session } from './utils/browserMp3';
-import { synthesizeInBrowser } from './utils/browserVoice';
+import { synthesizePcmInBrowser } from './utils/browserVoice';
 import {
   importDocumentFile,
   type DocumentImportProgress,
@@ -174,6 +173,7 @@ export default function App() {
   );
   const [translationProgress, setTranslationProgress] = useState<TranslationProgress | null>(null);
   const [browserTranslationStatus, setBrowserTranslationStatus] = useState<string | null>(null);
+  const [chapterTranslationPercent, setChapterTranslationPercent] = useState<number | null>(null);
 
   // Listening personalization (all persisted automatically in browser storage)
   const [speed, setSpeed] = useState<number>(() => initialVoiceSettings.speed);
@@ -430,7 +430,7 @@ export default function App() {
         return target;
       }
 
-      const prevStatus = target.translationStatus;
+      const prevSnapshot = target;
       const sessionIdAtStart = currentSession.id;
 
       // Mark chapter as translating in RAM
@@ -451,9 +451,44 @@ export default function App() {
       }
 
       const task = (async (): Promise<ChapterItem> => {
+        let highestPercent = 0;
         const payload = await translateInBrowser(target.sourceTitle, target.sourceText, {
           signal: effectiveSignal,
           onProgress: setBrowserTranslationStatus,
+          onPartial: (partial) => {
+            if (effectiveSignal?.aborted) return;
+            const pct = Math.min(
+              99,
+              Math.max(
+                highestPercent,
+                Math.round((partial.completedBlocks / Math.max(1, partial.totalBlocks)) * 100)
+              )
+            );
+            highestPercent = pct;
+            setChapterTranslationPercent(pct);
+
+            const partialTitle = polishFrenchTitle(partial.translatedTitle || target.sourceTitle);
+            const partialText = polishFrenchTranslation(partial.translatedText);
+            const partialChapter: ChapterItem = {
+              ...applyChapterTranslation(target, partialTitle, partialText),
+              translationStatus: 'translating',
+            };
+
+            setSession((prev) => {
+              if (!prev || prev.id !== sessionIdAtStart) return prev;
+              const existing = prev.chapters[chapterIndex];
+              if (!existing || existing.translationStatus !== 'translating') return prev;
+              const nextChapters = prev.chapters.map((ch, idx) =>
+                idx === chapterIndex ? partialChapter : ch
+              );
+              const updated: BookSession = {
+                ...prev,
+                chapters: nextChapters,
+              };
+              sessionRef.current = updated;
+              return updated;
+            });
+          },
         });
 
         const finalTitle = polishFrenchTitle(payload.translatedTitle || target.sourceTitle);
@@ -503,12 +538,12 @@ export default function App() {
       try {
         return await task;
       } catch (err) {
-        // Restore prior chapter translation status if aborted or failed
+        // Restore prior chapter translation snapshot if aborted or failed
         setSession((prev) => {
           if (!prev || prev.id !== sessionIdAtStart) return prev;
           const nextChapters = prev.chapters.map((ch, idx) =>
             idx === chapterIndex && ch.translationStatus === 'translating'
-              ? { ...ch, translationStatus: prevStatus }
+              ? prevSnapshot
               : ch
           );
           const updated = { ...prev, chapters: nextChapters };
@@ -521,6 +556,7 @@ export default function App() {
           singleTranslationControllersRef.current.delete(ownController);
         }
         setBrowserTranslationStatus(null);
+        setChapterTranslationPercent(null);
         inflightTranslationsRef.current.delete(inflightKey);
       }
     },
@@ -1215,21 +1251,62 @@ export default function App() {
     let mp3Session: BrowserMp3Session | null = null;
 
     try {
-      // Step 1/3: Prepare & translate untranslated or currently-translating English chapters
-      const chaptersNeedingTranslation = indicesToExport.filter((chIdx) => {
-        const ch = sessionRef.current?.chapters[chIdx];
-        return Boolean(
+      const MAX_INFLIGHT_MP3_TASKS = 2;
+      const chapterTranslationPromises = new Map<number, Promise<ChapterItem | null>>();
+      const chapterNeedsTranslation = (ch: ChapterItem | undefined): boolean =>
+        Boolean(
           ch &&
             (ch.translationStatus === 'needs_translation' ||
               ch.translationStatus === 'translating') &&
             autoTranslateRef.current
         );
-      });
 
-      const preparedChapters: ChapterItem[] = [];
+      const startChapterTranslationLookahead = (chIdx: number): Promise<ChapterItem | null> | null => {
+        const existing = chapterTranslationPromises.get(chIdx);
+        if (existing) return existing;
+        const ch = sessionRef.current?.chapters[chIdx];
+        if (!chapterNeedsTranslation(ch)) return null;
+
+        const promise = translateChapter(chIdx, ac.signal);
+        // Prevent unhandled rejections if export aborts before this lookahead chapter is awaited
+        void promise.catch(() => {});
+        chapterTranslationPromises.set(chIdx, promise);
+        return promise;
+      };
+
+      const totalChaptersToTranslate = indicesToExport.filter((chIdx) =>
+        chapterNeedsTranslation(sessionRef.current?.chapters[chIdx])
+      ).length;
+
+      let totalSegments = indicesToExport.reduce(
+        (sum, chIdx) => sum + (sessionRef.current?.chapters[chIdx]?.segments.length ?? 0),
+        0
+      );
+      const isDefaultTuning = Math.abs(speed - 1.0) < 0.01 && Math.abs(pitchSemitones) < 0.05;
+      const canFastConcatNeuralMp3 = isDefaultTuning && pauseDurationSeconds === 0;
+
+      const directMp3Chunks: Uint8Array[] = [];
+      const pendingMp3Tasks: Promise<void>[] = [];
+      let mp3TaskError: unknown = null;
       let translatedCount = 0;
+      let completed = 0;
+      let firstPreparedChapter: ChapterItem | null = null;
 
-      if (chaptersNeedingTranslation.length === 0) {
+      const enqueueMp3Task = async (runTask: () => Promise<void>) => {
+        if (mp3TaskError) throw mp3TaskError;
+        while (pendingMp3Tasks.length >= MAX_INFLIGHT_MP3_TASKS) {
+          await pendingMp3Tasks.shift();
+          if (mp3TaskError) throw mp3TaskError;
+        }
+        const tracked = runTask().catch((err: unknown) => {
+          if (!mp3TaskError) {
+            mp3TaskError = err;
+          }
+        });
+        pendingMp3Tasks.push(tracked);
+      };
+
+      if (totalChaptersToTranslate === 0) {
         setExportProgress({
           scope,
           stage: 'preparing',
@@ -1243,102 +1320,94 @@ export default function App() {
         });
       }
 
-      for (let i = 0; i < indicesToExport.length; i++) {
+      for (let orderIdx = 0; orderIdx < indicesToExport.length; orderIdx++) {
         if (ac.signal.aborted) {
           throw new DOMException('Export annulé', 'AbortError');
         }
-        const chIdx = indicesToExport[i];
+        if (mp3TaskError) throw mp3TaskError;
+
+        const chIdx = indicesToExport[orderIdx];
         let chapter = sessionRef.current?.chapters[chIdx];
         if (!chapter) continue;
 
-        if (
-          (chapter.translationStatus === 'needs_translation' ||
-            chapter.translationStatus === 'translating') &&
-          autoTranslateRef.current
-        ) {
-          setExportProgress({
-            scope,
-            stage: 'translating',
-            stageHeadline: 'Étape 1/3 · Traduction EN → FR',
-            detail: `Traduction du chapitre ${chIdx + 1}/${currentSession.chapters.length} (« ${chapter.sourceTitle} »)…`,
-            label: `Traduction EN → FR — Chapitre ${chIdx + 1}`,
-            completedSegments: translatedCount,
-            totalSegments: Math.max(1, chaptersNeedingTranslation.length),
-            stepIndex: 1,
-            totalSteps: 3,
-          });
-          const translated = await translateChapter(chIdx, ac.signal);
+        const prevSegmentCount = chapter.segments.length;
+        const pendingTranslation = startChapterTranslationLookahead(chIdx);
+        if (pendingTranslation) {
+          if (orderIdx === 0) {
+            setExportProgress({
+              scope,
+              stage: 'translating',
+              stageHeadline: 'Étape 1/3 · Traduction EN → FR',
+              detail: `Traduction du chapitre ${chIdx + 1}/${currentSession.chapters.length} (« ${chapter.sourceTitle} »)…`,
+              label: `Traduction EN → FR — Chapitre ${chIdx + 1}`,
+              completedSegments: translatedCount,
+              totalSegments: Math.max(1, totalChaptersToTranslate),
+              stepIndex: 1,
+              totalSteps: 3,
+            });
+          } else {
+            // Stay in step 2 with monotonic segment progress while awaiting lookahead chapter translation
+            setExportProgress({
+              scope,
+              stage: 'synthesizing',
+              stageHeadline: `Étape 2/3 · Synthèse vocale & encodage MP3 (${voiceLabel})`,
+              detail: `Finalisation de la traduction du chapitre ${chIdx + 1}/${currentSession.chapters.length} (« ${chapter.sourceTitle} »)…`,
+              label: `Traduction — Chapitre ${chIdx + 1}`,
+              completedSegments: completed,
+              totalSegments: Math.max(1, totalSegments),
+              stepIndex: 2,
+              totalSteps: 3,
+            });
+          }
+          const translated = await pendingTranslation;
           if (translated) {
             chapter = translated;
           }
           translatedCount++;
+          totalSegments = Math.max(
+            completed + chapter.segments.length,
+            totalSegments - prevSegmentCount + chapter.segments.length
+          );
         }
-        preparedChapters.push(chapter);
-      }
 
-      const totalSegments = preparedChapters.reduce((sum, ch) => sum + ch.segments.length, 0);
-      const isDefaultTuning = Math.abs(speed - 1.0) < 0.01 && Math.abs(pitchSemitones) < 0.05;
-      const canFastConcatNeuralMp3 = isDefaultTuning && pauseDurationSeconds === 0;
+        if (!firstPreparedChapter) {
+          firstPreparedChapter = chapter;
+        }
 
-      setExportProgress({
-        scope,
-        stage: 'synthesizing',
-        stageHeadline: `Étape 2/3 · Synthèse vocale (voix ${voiceLabel})`,
-        detail:
-          scope === 'chapter'
-            ? `Génération vocale — ${preparedChapters[0].title}`
-            : `Génération vocale du livre entier (${preparedChapters.length} chapitres)…`,
-        label: `Synthèse vocale (${voiceLabel})`,
-        completedSegments: 0,
-        totalSegments,
-        stepIndex: 2,
-        totalSteps: 3,
-      });
+        // Pipeline translation of the next chapter in translation.worker while
+        // voice.worker and mp3.worker synthesize & encode the current chapter
+        if (orderIdx + 1 < indicesToExport.length) {
+          startChapterTranslationLookahead(indicesToExport[orderIdx + 1]);
+        }
 
-      const directMp3Chunks: Uint8Array[] = [];
-      let completed = 0;
-
-      for (let chIdx = 0; chIdx < preparedChapters.length; chIdx++) {
-        const chapter = preparedChapters[chIdx];
         for (let segIdx = 0; segIdx < chapter.segments.length; segIdx++) {
           if (ac.signal.aborted) {
             throw new DOMException('Export annulé', 'AbortError');
           }
+          if (mp3TaskError) throw mp3TaskError;
 
           const segDetail =
             scope === 'chapter'
               ? `${chapter.title} — segment ${segIdx + 1}/${chapter.segments.length}`
-              : `Chapitre ${chIdx + 1}/${preparedChapters.length} (${chapter.title}) — segment ${segIdx + 1}/${chapter.segments.length}`;
+              : `Chapitre ${orderIdx + 1}/${indicesToExport.length} (${chapter.title}) — segment ${segIdx + 1}/${chapter.segments.length}`;
 
           setExportProgress({
             scope,
             stage: 'synthesizing',
-            stageHeadline: `Étape 2/3 · Synthèse vocale (voix ${voiceLabel})`,
-            detail: `Génération vocale · ${segDetail}`,
+            stageHeadline: `Étape 2/3 · Synthèse vocale & encodage MP3 (${voiceLabel})`,
+            detail: `Génération audio & encodage en parallèle · ${segDetail}`,
             label: segDetail,
             completedSegments: completed,
-            totalSegments,
+            totalSegments: Math.max(1, totalSegments),
             stepIndex: 2,
             totalSteps: 3,
           });
 
           const segAudio = await audio.fetchSegmentAudio(chapter, segIdx, ac.signal);
 
-          if (canFastConcatNeuralMp3 && segAudio.mimeType === 'audio/mpeg') {
+          if (canFastConcatNeuralMp3 && segAudio.mimeType === 'audio/mpeg' && segAudio.rawBytes) {
             directMp3Chunks.push(new Uint8Array(segAudio.rawBytes));
           } else {
-            setExportProgress({
-              scope,
-              stage: 'encoding',
-              stageHeadline: 'Étape 2/3 · Encodage MP3 en arrière-plan',
-              detail: `Conversion MP3 128 kbps · ${segDetail}`,
-              label: `Encodage MP3 — ${segDetail}`,
-              completedSegments: completed,
-              totalSegments,
-              stepIndex: 2,
-              totalSteps: 3,
-            });
-
             if (!mp3Session) {
               mp3Session = await createBrowserMp3Session({
                 bitrateKbps: 128,
@@ -1346,6 +1415,7 @@ export default function App() {
               });
             }
 
+            const activeMp3Session = mp3Session;
             const dspOptions = {
               pauseOffsets: segAudio.pauseOffsets,
               speed,
@@ -1355,28 +1425,52 @@ export default function App() {
               hdVoiceEnhanced,
             };
 
-            if (segAudio.mimeType === 'audio/wav') {
-              await mp3Session.appendWav(segAudio.rawBytes, dspOptions);
+            if (segAudio.mimeType === 'audio/pcm') {
+              await enqueueMp3Task(() =>
+                activeMp3Session.appendPcm(segAudio.samples, segAudio.sampleRate, dspOptions)
+              );
+            } else if (segAudio.mimeType === 'audio/wav' && segAudio.rawBytes) {
+              const rawWav = segAudio.rawBytes;
+              await enqueueMp3Task(() => activeMp3Session.appendWav(rawWav, dspOptions));
             } else {
               const decoded = await audio.decodeAudioToMonoPcm(segAudio);
-              await mp3Session.appendPcm(decoded.samples, decoded.sampleRate, {
-                ...dspOptions,
-                pauseOffsets: decoded.pauseOffsets,
-              });
+              await enqueueMp3Task(() =>
+                activeMp3Session.appendPcm(decoded.samples, decoded.sampleRate, {
+                  ...dspOptions,
+                  pauseOffsets: decoded.pauseOffsets,
+                })
+              );
             }
           }
 
           completed++;
         }
 
-        if (mp3Session && chIdx < preparedChapters.length - 1) {
-          await mp3Session.appendSilence(0.7);
+        if (mp3Session && orderIdx < indicesToExport.length - 1) {
+          const activeMp3Session = mp3Session;
+          await enqueueMp3Task(() => activeMp3Session.appendSilence(0.7));
         }
       }
 
+      if (pendingMp3Tasks.length > 0) {
+        setExportProgress({
+          scope,
+          stage: 'encoding',
+          stageHeadline: 'Étape 2/3 · Finalisation de l’encodage MP3',
+          detail: 'Derniers segments en cours d’encodage dans le worker MP3…',
+          label: 'Finalisation de l’encodage MP3…',
+          completedSegments: completed,
+          totalSegments: Math.max(1, totalSegments),
+          stepIndex: 2,
+          totalSteps: 3,
+        });
+        await Promise.all(pendingMp3Tasks);
+        if (mp3TaskError) throw mp3TaskError;
+      }
+
       const baseName =
-        scope === 'chapter'
-          ? `${currentSession.title}-${preparedChapters[0].title}`
+        scope === 'chapter' && firstPreparedChapter
+          ? `${currentSession.title}-${firstPreparedChapter.title}`
           : `${currentSession.title}-integral`;
       const filename = sanitizeMp3Filename(baseName);
 
@@ -1498,8 +1592,8 @@ export default function App() {
           headline: `Traduction EN → FR — ${translatingChapterLabels.join(', ')}`,
           detail:
             browserTranslationStatus ||
-            'Traduction locale dans le navigateur (sans appel externe)…',
-          percent: null,
+            'Traduction locale par petits blocs dans le navigateur…',
+          percent: chapterTranslationPercent,
           cancelLabel: 'Annuler',
         },
         onCancel: abortAllTranslations,
@@ -1547,6 +1641,7 @@ export default function App() {
     audio.bufferingProgress,
     audio.stop,
     browserTranslationStatus,
+    chapterTranslationPercent,
     exportProgress,
     importProgress,
     isImportingFile,
@@ -1674,21 +1769,20 @@ export default function App() {
 
       try {
         const voiceName = getNeuralVoiceById(voiceId).name;
-        const wavBlob = await synthesizeInBrowser(
+        const pcm = await synthesizePcmInBrowser(
           `Bonjour, ici la voix ${voiceName}. La synthèse fonctionne parfaitement.`,
           voiceId
         );
-        const wav = parseWavBuffer(await wavBlob.arrayBuffer());
-        if (wav.samples.length === 0) {
+        if (pcm.samples.length === 0) {
           throw new Error('Aucun signal audio généré.');
         }
 
         const readySamples = hdVoiceEnhanced
-          ? enhanceVoiceHdFluid(wav.samples, wav.sampleRate)
-          : wav.samples;
+          ? enhanceVoiceHdFluid(pcm.samples, pcm.sampleRate)
+          : pcm.samples;
 
         if (previewCtx) {
-          const buffer = previewCtx.createBuffer(1, readySamples.length, wav.sampleRate);
+          const buffer = previewCtx.createBuffer(1, readySamples.length, pcm.sampleRate);
           buffer.copyToChannel(new Float32Array(readySamples), 0);
           const src = previewCtx.createBufferSource();
           const gain = previewCtx.createGain();

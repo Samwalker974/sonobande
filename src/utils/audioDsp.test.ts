@@ -152,3 +152,27 @@ test('enhanceVoiceHdFluid removes DC offset, smooths edges, and stays safely bou
   mean /= enhanced.length;
   assert.ok(Math.abs(mean) < 0.02, `Expected DC offset removed, got mean=${mean}`);
 });
+
+test('enhanceVoiceHdFluid limiter is C1-smooth across loud peaks with zero step-crackle discontinuity', () => {
+  const sampleRate = 22050;
+  // Smooth 220 Hz sine sweeping cleanly above the 0.78-0.96 peak region
+  const raw = new Float32Array(sampleRate);
+  for (let i = 0; i < raw.length; i++) {
+    const env = Math.min(1, i / (sampleRate * 0.25));
+    raw[i] = 0.95 * env * Math.sin((2 * Math.PI * 220 * i) / sampleRate);
+  }
+
+  const enhanced = enhanceVoiceHdFluid(raw, sampleRate);
+  // Check middle steady-state region: adjacent sample delta of a 220 Hz sine at 22050 Hz is ~0.062 max.
+  // A discontinuous limiter step (like the old 0.78 -> 0.87 jump) would spike delta above 0.14.
+  const start = Math.floor(sampleRate * 0.3);
+  const end = Math.floor(sampleRate * 0.9);
+  let maxDelta = 0;
+  for (let i = start + 1; i < end; i++) {
+    maxDelta = Math.max(maxDelta, Math.abs(enhanced[i] - enhanced[i - 1]));
+  }
+  assert.ok(
+    maxDelta < 0.1,
+    `Expected smooth continuous waveform without crackle jump, got maxDelta=${maxDelta.toFixed(4)}`
+  );
+});

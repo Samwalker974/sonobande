@@ -1,48 +1,70 @@
 import type { NeuralVoiceId } from '../types/walkman';
+import { encodeWavBuffer, parseWavBuffer } from './audioDsp';
+
+export interface VoiceSynthesisPhrase {
+  text: string;
+  pauseAfter: boolean;
+}
+
+export interface SynthesizedPcmResult {
+  samples: Float32Array;
+  sampleRate: number;
+  pauseOffsets: number[];
+}
+
+export interface SynthesizePcmOptions {
+  signal?: AbortSignal;
+  onProgress?: (completed: number, total: number) => void;
+}
 
 export type VoiceWorkerRequest =
-  | { type: 'synthesize'; id: number; text: string; voiceId: NeuralVoiceId }
+  | {
+      type: 'synthesize';
+      id: number;
+      voiceId: NeuralVoiceId;
+      text: string;
+      phrases?: VoiceSynthesisPhrase[];
+    }
   | { type: 'cancel'; id: number };
 
 export type VoiceWorkerResponse =
-  | { type: 'result'; id: number; audio: Blob }
+  | {
+      type: 'progress';
+      id: number;
+      completed: number;
+      total: number;
+    }
+  | {
+      type: 'result';
+      id: number;
+      pcmBuffer?: ArrayBuffer;
+      sampleRate?: number;
+      pauseOffsets?: number[];
+      audio?: Blob;
+    }
   | { type: 'error'; id: number; message: string };
 
 interface PendingSynthesis {
-  resolve: (audio: Blob) => void;
+  resolve: (result: VoiceWorkerResultPayload) => void;
   reject: (error: Error) => void;
+  onProgress?: (completed: number, total: number) => void;
   signal?: AbortSignal;
   abortHandler?: () => void;
 }
 
-// @diffusionstudio/vits-web creates a new ONNX InferenceSession on every predict()
-// call without releasing it. Recycling the worker periodically frees WASM heap cleanly
-// during long MP3 exports.
-const MAX_SYNTHESES_PER_WORKER = 16;
+type VoiceWorkerResultPayload = Extract<VoiceWorkerResponse, { type: 'result' }>;
 
+// The voice worker now reuses a single cached ONNX InferenceSession per voice and
+// explicitly disposes tensors after each run, so it stays alive across syntheses.
 let voiceWorker: Worker | null = null;
-let workerSynthesesCount = 0;
 let nextRequestId = 0;
 const pendingSyntheses = new Map<number, PendingSynthesis>();
-
-function recycleVoiceWorkerIfIdle(force = false): void {
-  if (
-    voiceWorker &&
-    pendingSyntheses.size === 0 &&
-    (force || workerSynthesesCount >= MAX_SYNTHESES_PER_WORKER)
-  ) {
-    voiceWorker.terminate();
-    voiceWorker = null;
-    workerSynthesesCount = 0;
-  }
-}
 
 export function disposeVoiceWorker(): void {
   if (voiceWorker) {
     voiceWorker.terminate();
     voiceWorker = null;
   }
-  workerSynthesesCount = 0;
 }
 
 function finishSynthesis(
@@ -64,37 +86,36 @@ function failWorker(worker: Worker, message: string): void {
 
   worker.terminate();
   voiceWorker = null;
-  workerSynthesesCount = 0;
   for (const [requestId] of pendingSyntheses) {
     finishSynthesis(requestId, ({ reject }) => reject(new Error(message)));
   }
 }
 
 function getVoiceWorker(): Worker {
-  recycleVoiceWorkerIfIdle();
   if (voiceWorker) return voiceWorker;
 
   const worker = new Worker(new URL('../workers/voice.worker.ts', import.meta.url), {
     type: 'module',
   });
   voiceWorker = worker;
-  workerSynthesesCount = 0;
 
   worker.onmessage = (event: MessageEvent<VoiceWorkerResponse>) => {
     const response = event.data;
-    if (!pendingSyntheses.has(response.id)) return;
+    const pending = pendingSyntheses.get(response.id);
+    if (!pending) return;
 
-    let hadError = false;
+    if (response.type === 'progress') {
+      pending.onProgress?.(response.completed, response.total);
+      return;
+    }
+
     finishSynthesis(response.id, ({ resolve, reject }) => {
       if (response.type === 'result') {
-        workerSynthesesCount++;
-        resolve(response.audio);
+        resolve(response);
       } else {
-        hadError = true;
         reject(new Error(response.message));
       }
     });
-    recycleVoiceWorkerIfIdle(hadError);
   };
 
   worker.onerror = (event) => {
@@ -108,12 +129,15 @@ function getVoiceWorker(): Worker {
   return worker;
 }
 
-export function synthesizeInBrowser(
-  text: string,
-  voiceId: NeuralVoiceId,
-  signal?: AbortSignal
-): Promise<Blob> {
-  if (signal?.aborted) {
+function requestSynthesisFromWorker(
+  payload: {
+    text: string;
+    phrases?: VoiceSynthesisPhrase[];
+    voiceId: NeuralVoiceId;
+  },
+  options: SynthesizePcmOptions = {}
+): Promise<VoiceWorkerResultPayload> {
+  if (options.signal?.aborted) {
     return Promise.reject(new DOMException('Synthèse annulée', 'AbortError'));
   }
 
@@ -121,8 +145,14 @@ export function synthesizeInBrowser(
   const requestId = ++nextRequestId;
 
   return new Promise((resolve, reject) => {
-    const pending: PendingSynthesis = { resolve, reject, signal };
-    if (signal) {
+    const pending: PendingSynthesis = {
+      resolve,
+      reject,
+      onProgress: options.onProgress,
+      signal: options.signal,
+    };
+
+    if (options.signal) {
       pending.abortHandler = () => {
         finishSynthesis(requestId, ({ reject: rejectPending }) => {
           try {
@@ -136,12 +166,26 @@ export function synthesizeInBrowser(
           rejectPending(new DOMException('Synthèse annulée', 'AbortError'));
         });
       };
-      signal.addEventListener('abort', pending.abortHandler, { once: true });
+      options.signal.addEventListener('abort', pending.abortHandler, { once: true });
     }
 
     pendingSyntheses.set(requestId, pending);
     try {
-      worker.postMessage({ type: 'synthesize', id: requestId, text, voiceId });
+      const request: VoiceWorkerRequest = payload.phrases
+        ? {
+            type: 'synthesize',
+            id: requestId,
+            voiceId: payload.voiceId,
+            text: payload.text,
+            phrases: payload.phrases,
+          }
+        : {
+            type: 'synthesize',
+            id: requestId,
+            voiceId: payload.voiceId,
+            text: payload.text,
+          };
+      worker.postMessage(request);
     } catch (error) {
       finishSynthesis(requestId, ({ reject: rejectPending }) => {
         rejectPending(
@@ -150,4 +194,66 @@ export function synthesizeInBrowser(
       });
     }
   });
+}
+
+/**
+ * Synthesizes one string or an ordered list of phrases directly into mono Float32 PCM
+ * via the persistent ONNX Piper worker (zero-copy ArrayBuffer transfer, no WAV round-trip).
+ */
+export async function synthesizePcmInBrowser(
+  input: string | VoiceSynthesisPhrase[],
+  voiceId: NeuralVoiceId,
+  options: SynthesizePcmOptions = {}
+): Promise<SynthesizedPcmResult> {
+  const payload =
+    typeof input === 'string'
+      ? { text: input, voiceId }
+      : {
+          text: input.map((p) => p.text).join(' '),
+          phrases: input,
+          voiceId,
+        };
+
+  const response = await requestSynthesisFromWorker(payload, options);
+
+  if (response.pcmBuffer && typeof response.sampleRate === 'number') {
+    return {
+      samples: new Float32Array(response.pcmBuffer),
+      sampleRate: response.sampleRate,
+      pauseOffsets: response.pauseOffsets ?? [],
+    };
+  }
+
+  if (response.audio) {
+    const wav = parseWavBuffer(await response.audio.arrayBuffer());
+    return {
+      samples: wav.samples,
+      sampleRate: wav.sampleRate,
+      pauseOffsets: response.pauseOffsets ?? [],
+    };
+  }
+
+  throw new Error('La synthèse vocale n’a renvoyé aucune donnée audio.');
+}
+
+/**
+ * Backward-compatible helper returning a WAV Blob.
+ */
+export async function synthesizeInBrowser(
+  text: string,
+  voiceId: NeuralVoiceId,
+  signal?: AbortSignal
+): Promise<Blob> {
+  const response = await requestSynthesisFromWorker({ text, voiceId }, { signal });
+
+  if (response.audio) {
+    return response.audio;
+  }
+
+  if (response.pcmBuffer && typeof response.sampleRate === 'number') {
+    const wavBuffer = encodeWavBuffer(new Float32Array(response.pcmBuffer), response.sampleRate);
+    return new Blob([wavBuffer], { type: 'audio/wav' });
+  }
+
+  throw new Error('La synthèse vocale n’a renvoyé aucune donnée audio.');
 }
